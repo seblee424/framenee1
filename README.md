@@ -45,4 +45,3 @@ The original design source is available on [Figma](https://www.figma.com/design/
 - Photos and calendar data now have dedicated API-ready service wrappers.
 - Family members, rewards, and tasks remain local mock state because the current backend contract does not define those endpoints yet.
 - Set `VITE_USE_MOCK_DATA=false` together with the API variables in `.env` to start pulling supported data from the backend.
-  
