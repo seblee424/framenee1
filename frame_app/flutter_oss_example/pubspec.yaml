@@ -1,0 +1,24 @@
+name: flutter_oss_example
+description: FrameNe - 家庭共享相册与日历应用（阿里云版）
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  image_picker: ^1.2.1
+  shared_preferences: ^2.5.3
+  http: ^1.6.0
+  device_calendar: ^4.3.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

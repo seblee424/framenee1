@@ -1,0 +1,22 @@
+{
+  "name": "framene-server",
+  "version": "1.0.0",
+  "description": "FrameNe 后端 API - 部署在阿里云函数计算 FC",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@alicloud/pop-core": "^1.7.12",
+    "ali-oss": "^6.23.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
+    "pg": "^8.13.1",
+    "uuid": "^14.0.0"
+  }
+}
