@@ -165,6 +165,7 @@ curl https://你的ngrok域名/api/health
 | 2026-06-11 | 首次初始化 | `.env` 全部配置 | 需自己跑 ngrok |
 | 2026-06-11 | 清理无用文件 + 更新开发计划 + API 合约文档（MVP 精简版） | 无配置变更 | git pull 后重新同步本地 |
 | 2026-06-11 | 创建 DEV_CHECKLIST.md（周计划） + FRAMENE_DEV_PLAN.md（Hermes 状态文档） | 无配置变更 | 两个新文件替代旧的清单和计划 |
+| 2026-06-11 | SYNC_GUIDE.md 搬到根目录，与 FRAMENE_DEV_PLAN.md 并列 | 无配置变更 | 路径从 framene-server/ 变为根目录 |
 | | | | |
 | | | | |
 | | | | |
