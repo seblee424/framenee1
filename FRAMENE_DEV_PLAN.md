@@ -1,236 +1,141 @@
-# FrameNe 全栈开发规划（MVP 精简版）
+# FrameNe Hermes 开发状态文档
 
-> 生成日期：2026-06-11
-> 当前状态：后端 API 基本完成 + Flutter 手机端基础框架 + React Web 端 UI 组件齐全
-> 目标：MVP（最小可行产品）— 仅保留飞书日历同步，去掉 Google/钉钉日历
-> 后期方向：两个 App（Web PWA + Android App）+ 阿里云云端
+> 用途：每次 Hermes AI 启动项目时读取此文件，获取当前开发状态，无需重复沟通。
+> 最后更新：2026-06-11
 
 ---
 
-## 一、项目架构总览
+## 一、项目概述
+
+FrameNe 是一个家庭日程管理 + 相册共享 App。MVP 版本仅支持飞书日历同步，移除 Google/钉钉日历。
+
+### 项目结构
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   用户访问层                          │
-├─────────────────┬─────────────────┬─────────────────┤
-│  Web 端 (PWA)   │  手机端 Web App  │  安卓原生 App   │
-│  React/Vite     │  Flutter Web    │  Flutter        │
-│  www.framene.com │  适配手机UI     │  (后期)         │
-├─────────┴───────┴─────────────────┴─────────────────┤
-│              framene-server (Node.js/Express)         │
-│              部署：阿里云函数计算 FC                  │
-├──────────┬──────────┬──────────┬────────────────────┤
-│ 阿里云    │ 阿里云    │ 阿里云    │ 飞书日历           │
-│ RDS      │ OSS      │ DirectMail│ OAuth 日历同步     │
-│ PostgreSQL│ 图片存储  │ 邮件验证码 │                    │
-└──────────┴──────────┴──────────┴────────────────────┘
+~/Desktop/framene/                         # 活动工作目录（开发用）
+├── frame_app/                             # 前端代码
+│   ├── src/                               # React Web 端 (Vite + shadcn + MUI)
+│   └── flutter_oss_example/               # Flutter 手机端 (Web/macOS)
+│       ├── lib/config/                    # aliyun_config, api_service
+│       ├── lib/models/                    # CalendarEvent, AppUser, MediaAsset...
+│       ├── lib/pages/                     # calendar_tab, album_tab, device_tab...
+│       └── lib/services/                  # app_backend, weather_service
+├── framene-server/                        # Express 后端
+│   ├── index.js                           # 全部 API 路由 (~1600 行)
+│   ├── .env                               # 凭据（不上传 GitHub）
+│   ├── .env.example                       # 模板
+│   ├── SYNC_GUIDE.md                      # 伙伴协作指南
+│   └── scripts/                           # 调试脚本
+├── DEV_CHECKLIST.md                       # 每周工作规划
+├── FRAMENE_DEV_PLAN.md                    # ← 本文档（Hermes 状态）
+└── .gitignore
 ```
 
-### 现有资源清单
+### GitHub 仓库
+- `seblee424/framenee1` — 最新代码
 
-| 资源 | 状态 | 说明 |
+### 源文件备份
+- `~/Desktop/日程管理项目文件/` — 旧版源文件，仅作备份
+
+---
+
+## 二、当前开发状态
+
+### ✅ 已完成
+
+| 模块 | 详情 |
+|------|------|
+| 后端 Express | 所有 API 路由在 `index.js`（~1600行） |
+| 用户认证 | 邮箱登录/注册、钉钉扫码登录 |
+| 日历 CRUD | GET/POST/PUT/DELETE `/api/events` |
+| 飞书日历同步 | OAuth → 获取 token → 同步事件到 calendar_events（provider='feishu'） |
+| OSS 相册 | 上传（文件+base64）/ 列表 / 查看 / 删除 |
+| Flutter 日历页 | 月视图、日视图、飞书同步弹窗 |
+| Flutter 相册页 | OSS 图片列表、上传、删除 |
+| Flutter 设备页 | 天气显示（wttr.in API）、设备连接占位 |
+| Flutter 我的页 | 飞书连接状态显示 |
+| Flutter 天气 | 日历页左上角 + 设备页（浏览器定位回退 IP） |
+| 阿里云 RDS | PostgreSQL, feishu_calendar_tokens 表 |
+| 阿里云 OSS | Bucket `framene-photos`，私有读+签名 URL 1h |
+| 阿里云 DirectMail | 发信域名 send.framene.com |
+| 域名 | www.framene.com，企业邮箱 qiye.aliyun.com |
+
+### ❌ 待完成
+
+| 功能 | 说明 |
+|------|------|
+| 手机验证码登录 | 需接入阿里云短信服务 |
+| 阿里云 FC 部署 | 后端部署上线 |
+| DeepSeek 语音输入日程 | 后端 `/api/events/voice` + Flutter 端语音识别 |
+| Web 端对接后端 | React 前端目前 mock 数据模式 |
+| 日历成员共享 | 计划放到 Web 端开发阶段 |
+| Flutter Android 原生 | 目前 Flutter Web + macOS，无 android/ios 目录 |
+
+---
+
+## 三、API 要点
+
+| 端点 | 方法 | 说明 |
 |------|------|------|
-| Web 前端 (React/Vite) | UI 组件齐全 | `frame_app/src/` |
-| Flutter 手机端 | 基础框架 | `frame_app/flutter_oss_example/`，已有日历/相册/设备/我的页面 |
-| framene-server (Express) | ✅ 已完成 | 含用户认证、日历CRUD、飞书同步、OSS相册 |
-| 阿里云 RDS PostgreSQL | ✅ 已开通 | 实例：pgm-2ze89c73w569e2xc7o，数据库：frame-nee |
-| 阿里云 OSS | ✅ 已开通 | Bucket：framene-photos（北京） |
-| 阿里云 DirectMail | ✅ 已配置 | 发信域名：send.framene.com |
-| 域名 | ✅ 已注册 | www.framene.com（阿里云） |
-| 阿里云企业邮箱 | ✅ 已配置 | qiye.aliyun.com |
-| 飞书日历同步 | ✅ 已完成 | OAuth + 事件同步 |
-| 钉钉登录 | ✅ 已完成 | 用于用户认证（日历同步已移除） |
-| 邮箱登录 | ✅ 已完成 | |
-| 手机验证码 | ❌ 待开发 | |
-| 阿里云函数计算 FC | ❌ 待部署 | |
+| `/api/events` | GET | 查事件，支持 `startAt`/`endAt`/`provider` 过滤 |
+| `/api/events` | POST | 创建手动事件 |
+| `/api/events/:id` | PUT | 更新事件 |
+| `/api/events/:id` | DELETE | 删除事件 |
+| `/api/events/sync/feishu` | POST | 同步飞书日历 |
+| `/api/auth/feishu-auth-url` | GET | 获取飞书 OAuth URL |
+| `/api/auth/feishu-callback` | GET | 飞书 OAuth 回调 |
+| `/api/photos/upload` | POST | OSS 上传（multipart） |
+| `/api/photos/upload-base64` | POST | OSS 上传（base64 JSON） |
+| `/api/photos` | GET | 获取照片列表 |
+| `/api/photos/:id` | DELETE | 删除照片 |
 
----
+### 启动命令
 
-## 二、分阶段时间规划
+```bash
+# 后端
+cd ~/Desktop/framene/framene-server && node index.js
 
-### 第一阶段：后端完善与部署（2~3 周）
+# ngrok（OAuth 回调需要）
+ngrok http 3000
 
-#### 第 1 周：补齐后端功能
-- **OSS 已开通** ✅，照片上传/列表/删除 API 已对接 OSS
-- **手机验证码登录** — 接入阿里云短信服务
-- 完善用户注册/登录流程（邮箱 + 手机验证码 + 钉钉扫码）
+# Flutter Web 前端
+cd ~/Desktop/framene/frame_app/flutter_oss_example
+flutter run -d web-server --web-port 8080
 
-#### 第 2 周：飞书日历与事件管理
-- **飞书日历同步已完成** ✅
-- 日历事件 CRUD API 已完成 ✅
-- 事件按日期查询 API 已完成 ✅
-- 同步状态管理已完成 ✅
-
-#### 第 3 周：部署 + DeepSeek 语音输入
-- **部署到阿里云函数计算 FC**
-  - 将 framene-server 打包部署到 FC
-  - 配置 FC 自定义域名（api.framene.com）
-  - 配置 FC 环境变量（RDS 连接串、OSS Key 等）
-  - 配置 HTTPS 证书
-- **DeepSeek 语音输入日程**（放在 FC 部署之后）
-  - 在后端新增 `/api/events/voice` 接口
-  - Flutter 端接入语音识别 → 调用 DeepSeek API 解析自然语言 → 创建日历事件
-  - 示例：用户说"明天下午三点去打球"→ 自动创建事件
-
----
-
-### 第二阶段：Web 前端功能开发（3~4 周）
-> 目标：Web 端能完整使用所有功能
-
-#### 第 4 周：用户系统对接
-- 登录/注册页面对接后端 API
-  - 手机验证码登录
-  - 邮箱登录
-  - 钉钉扫码登录
-- JWT token 持久化（localStorage）
-- 用户信息页面
-
-#### 第 5 周：日历功能开发
-- 日历视图与现实数据对接
-- 事件创建/编辑/删除
-- **日历成员共享**（放到 Web 阶段实现）
-- 飞书日历同步状态显示
-
-#### 第 6 周：相册功能开发
-- 照片列表展示（从 OSS 加载）
-- 照片上传（拖拽/选择文件）
-- 照片删除
-- 照片按日期分组
-
-#### 第 7 周：设备绑定与多端同步
-- 设备绑定功能
-- 多端数据同步（日历事件 + 照片跨设备同步）
-- 实时更新（轮询 30 秒）
-
----
-
-### 第三阶段：Flutter 手机端完善（3~4 周）
-> 目标：手机端功能完整，以 Flutter Web 为主，预留 Android 迁移
-
-#### 第 8 周：Flutter 功能完善
-- 登录/注册页面完善
-- API 服务层封装
-- Token 管理与自动登录
-
-#### 第 9 周：Flutter 日历功能
-- 飞书日历事件展示
-- 手动创建/编辑事件
-- DeepSeek 语音输入日程
-
-#### 第 10 周：Flutter 相册功能
-- Web 文件选择器上传（已完成）
-- 照片列表展示（已完成）
-- 照片删除（已完成）
-
-#### 第 11 周：Flutter 设备绑定与 UI 优化
-- 设备绑定
-- UI 适配手机窄屏
-
----
-
-### 第四阶段：测试与上架（3~4 周）
-
-#### 第 12~13 周：测试
-- 功能测试
-- 多设备同步测试
-- Bug 修复
-
-#### 第 14~15 周：打包与上架
-- **Web 端 PWA**：manifest.json + Service Worker → Vercel / 阿里云静态托管
-- **Android App**：Flutter 编译 Android → Google Play
-- 准备上架材料
-
----
-
-## 三、开发工具与账号
-
-| 平台 | 工具 | 说明 |
-|------|------|------|
-| Web 前端 | VS Code + Node.js 20+ | React + Vite + TypeScript |
-| Flutter 手机端 | VS Code | Flutter SDK |
-| 后端 | VS Code + Node.js 20+ | Express.js |
-| 数据库 | DBeaver / pgAdmin | 阿里云 RDS PostgreSQL |
-| 设计 | VS Code + Qwen-VL MCP | 截图给 AI 识别并改代码 |
-
-### 需要的账号
-
-| 平台 | 用途 | 费用 |
-|------|------|------|
-| 阿里云 | RDS、OSS、FC、DirectMail、短信 | 按量付费（已有账号） |
-| 飞书开发者平台 | 飞书日历 OAuth | 免费（已有应用） |
-| GitHub | 代码版本管理 | 免费（seblee424/framenee1） |
-| Vercel | Web 前端托管（可选） | 免费 |
-
----
-
-## 四、数据同步方案
-
-```
-┌──────────┐     ┌──────────────┐     ┌──────────┐
-│ 手机端    │────▶│  阿里云 RDS  │◀────│  Web 端  │
-│ (Flutter) │     │  (中心数据库) │     │ (React)  │
-└──────────┘     └──────┬───────┘     └──────────┘
-                        │
-                  ┌─────▼──────┐
-                  │ 阿里云 OSS  │
-                  │  (照片存储) │
-                  └────────────┘
-```
-
-**同步策略：**
-- **日历事件**：以 RDS 为中心，手动事件 + 飞书同步事件统一存储
-- **照片**：上传到 OSS → 记录 URL 到 RDS → 各端加载
-- **实时性**：初期轮询（每 30 秒），后期可加 WebSocket
-
----
-
-## 五、MVP 功能清单
-
-```
-第一阶段（当前已完成/进行中）：
-  ✅ 用户注册/登录（邮箱 + 钉钉）
-  ✅ 日历事件 CRUD
-  ✅ 飞书日历同步
-  ✅ OSS 照片上传/查看/删除
-  ☐ 手机验证码登录
-
-第二阶段（Web 端）：
-  ☐ Web 端对接登录/注册
-  ☐ Web 端日历功能
-  ☐ Web 端相册功能
-  ☐ 日历成员共享
-  ☐ 设备绑定
-
-第三阶段（Flutter + AI）：
-  ☐ DeepSeek 语音输入日程
-  ☐ Flutter 端功能完善
-  ☐ 阿里云 FC 部署
-  ☐ PWA / Android 上架
+# React Web 端
+cd ~/Desktop/framene/frame_app && npm run dev
 ```
 
 ---
 
-## 六、阿里云费用预估（MVP 最低配置）
+## 四、关键数据模型
 
-| 服务 | 配置 | 月费用 |
-|------|------|--------|
-| RDS PostgreSQL | 2核4G, 20GB | ¥100~200 |
-| OSS 对象存储 | 按量，50GB | ¥10~30 |
-| 函数计算 FC | 按调用量 | ¥10~50 |
-| 短信服务 | 按条计费 | ¥10~50 |
-| DirectMail | 200 封/天免费 | ¥0 |
-| 域名 | 已购 | ¥0 |
-| **合计** | | **约 ¥120~280/月** |
+### CalendarEvent.fromJson — 同时支持 snake_case 和 camelCase
+```dart
+String? _val(String camel, String snake) =>
+    (json[camel] ?? json[snake]) as String?;
+startAt: _val('startAt', 'start_at') ?? '',
+endAt: _val('endAt', 'end_at') ?? '',
+```
+
+### 数据库 calendar_events 表
+- 无 `owner_email` 列（前端 ownerEmail 可空）
+- provider 字段：`'manual'`（手动）或 `'feishu'`（飞书同步）
+- 飞书事件通过 `source_event_id` 去重
+
+### 飞书 OAuth
+- App ID: `cli_aaa3a6c437f9dbe0`
+- scope 需包含 `calendar:calendar:readonly`
+- token 2 小时过期 → 用户需点击「重新授权飞书日历」
+- 回调 URI + IP 白名单需在飞书开发者平台配置
 
 ---
 
-## 七、风险与注意事项
+## 五、注意事项（Hermes 记住）
 
-1. **OSS 防盗链**：配置 Referer 白名单，只允许 framene.com
-2. **隐私安全**：HTTPS + JWT 鉴权 + OSS 私有读（签名 URL）
-3. **数据备份**：RDS 自动备份开启
-4. **飞书 Token 过期**：access_token 2 小时过期，需引导用户重新授权
-
----
-
-*文档版本: 2.0（MVP精简版）| 最后更新: 2026-06-11*
+1. **VS Code 操作**：文件路径用绝对路径，保存说 Cmd+S，打开用 Cmd+Shift+P
+2. **.env 密码风险**：`read_file` 会脱敏密码为 `***`，用 `write_file` 重写会导致密码丢失。应使用 `patch` 修改单行，或 `terminal` 用 `grep` 验证原始内容
+3. **Flutter 网络**：`pub get` 超时时用 `--offline`
+4. **无 android/ios**：Flutter 项目缺少这两个平台目录，需要时用 `flutter create --platforms=android,ios .`
+5. **DEV_CHECKLIST.md**：每周工作规划，Hermes 每次启动时读取
+6. **本文件**：Hermes 启动时读取当前状态
