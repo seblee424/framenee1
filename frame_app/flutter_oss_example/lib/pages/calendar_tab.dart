@@ -1287,10 +1287,10 @@ class _CalendarTabState extends State<CalendarTab> {
                           // 跳转到第一个事件的日期
                           final firstDate = DateTime.parse(events.first.startAt);
                           setState(() {
-                            _focusedDay = firstDate;
                             _selectedDate = firstDate;
+                            _viewMonth = DateTime(firstDate.year, firstDate.month);
                           });
-                          _fetchEvents();
+                          _loadData();
                           Navigator.of(ctx).pop();
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('已创建 ${events.length} 个事件')),
