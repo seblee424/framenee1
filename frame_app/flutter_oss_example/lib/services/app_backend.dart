@@ -595,6 +595,105 @@ class AppBackend {
     await _saveJsonList(_eventsKey, updated.map((e) => e.toJson()).toList());
   }
 
+  /// 语音转写：发送文本到 Pipeline，返回解析后的事件
+  static Future<Map<String, dynamic>> transcribeVoice(String text) async {
+    try {
+      final result = await ApiService.post(
+        '/api/events/voice/transcribe',
+        body: {'text': text},
+      );
+      return result;
+    } catch (error) {
+      throw Exception('语音识别失败: $error');
+    }
+  }
+
+  /// 语音转写（音频模式）：发送 base64 音频到 Pipeline
+  static Future<Map<String, dynamic>> transcribeVoiceAudio(String audioBase64) async {
+    try {
+      final result = await ApiService.post(
+        '/api/events/voice/transcribe',
+        body: {'audio_base64': audioBase64},
+      );
+      return result;
+    } catch (error) {
+      throw Exception('语音识别失败: $error');
+    }
+  }
+
+  /// 批量保存语音创建的事件到后端+RDS
+  static Future<List<CalendarEvent>> saveVoiceEvents(
+    List<Map<String, dynamic>> calendarEvents,
+    AppUser user,
+  ) async {
+    final savedEvents = <CalendarEvent>[];
+    try {
+      // 语音端点支持 X-API-Key 鉴权（Demo 模式也能用）
+      final url = Uri.parse('${AliyunConfig.apiBaseUrl}/api/events/voice');
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        'X-API-Key': '2c7397b53a9856109d98c60a47e368b321588ed5263b3807',
+      };
+      // 如果已登录，也带上 Bearer token
+      final token = await ApiService.getToken();
+      if (token != null) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+
+      final response = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode({
+          'items': calendarEvents,
+          'userId': 1,
+        }),
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final result = jsonDecode(response.body) as Map<String, dynamic>;
+        if (result['items'] != null && result['items'] is List) {
+          for (final item in result['items']) {
+            savedEvents.add(CalendarEvent.fromJson(item as Map<String, dynamic>));
+          }
+        }
+        // 同时更新本地缓存，确保 Demo 模式下 _loadData 能读到
+        final prefs = await _prefs;
+        final raw = prefs.getString(_eventsKey);
+        final List<dynamic> existing =
+            raw != null ? jsonDecode(raw) as List<dynamic> : [];
+        final existingIds = existing.map((e) {
+          final json = e as Map<String, dynamic>;
+          return json['id'] as String? ?? '';
+        }).toSet();
+        for (final ev in savedEvents) {
+          if (!existingIds.contains(ev.id)) {
+            existing.add(ev.toJson());
+          }
+        }
+        await prefs.setString(_eventsKey, jsonEncode(existing));
+        return savedEvents;
+      }
+      throw Exception('保存失败: ${response.statusCode}');
+    } catch (_) {
+      // Fallback: save locally
+      for (final ce in calendarEvents) {
+        final event = CalendarEvent(
+          id: _randomId(),
+          title: ce['title'] as String? ?? '',
+          description: ce['description'] as String?,
+          provider: ce['provider'] as String? ?? 'manual',
+          startAt: ce['startAt'] as String? ?? '',
+          endAt: ce['endAt'] as String? ?? '',
+          location: ce['location'] as String?,
+          ownerEmail: ce['ownerEmail'] as String? ?? user.email ?? user.id,
+        );
+        await _saveEventLocally(event, user);
+        savedEvents.add(event);
+      }
+    }
+    return savedEvents;
+  }
+
   
 
   /// 更新事件

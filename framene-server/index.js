@@ -59,6 +59,9 @@ const config = {
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuCallbackUrl: process.env.FEISHU_CALLBACK_URL || '',
+
+  // 语音 Pipeline API Key（用于 framene_v1_1 → 后端对接）
+  voiceApiKey: process.env.VOICE_API_KEY || '',
 };
 
 // ============================================
@@ -1452,6 +1455,162 @@ app.post('/api/events', authMiddleware, async (req, res) => {
     res.json({ id: String(event.id), ...event });
   } catch (error) {
     console.error('创建事件失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 语音批量创建事件（framene_v1_1 pipeline 对接）
+app.post('/api/events/voice', async (req, res) => {
+  try {
+    // 双重鉴权：X-API-Key 或 Bearer JWT
+    const apiKey = req.headers['x-api-key'];
+    const authHeader = req.headers.authorization;
+    let userId = null;
+
+    if (apiKey && config.voiceApiKey && apiKey === config.voiceApiKey) {
+      // API Key 模式：用 body 里的 userId 或默认 1
+      userId = req.body.userId || 1;
+    } else if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1];
+        const decoded = jwt.verify(token, config.jwtSecret);
+        userId = decoded.userId;
+      } catch {
+        return res.status(401).json({ error: 'Token 无效' });
+      }
+    }
+
+    if (!userId) {
+      return res.status(401).json({ error: '未认证：需要 X-API-Key 或 Bearer token' });
+    }
+
+    const db = await getPool();
+    const { items } = req.body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: '缺少 items 数组' });
+    }
+
+    const created = [];
+    const skipped = [];
+
+    for (const item of items) {
+      const { title, description, startAt, endAt, location, provider, ownerEmail } = item;
+
+      if (!title || !startAt || !endAt) {
+        skipped.push({ reason: '缺少必填字段(title/startAt/endAt)', item });
+        continue;
+      }
+
+      const result = await db.query(
+        `INSERT INTO calendar_events (user_id, title, description, provider, start_at, end_at, location)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [userId, title, description || null, provider || 'manual', startAt, endAt, location || null]
+      );
+
+      const event = result.rows[0];
+      created.push({
+        id: String(event.id),
+        title: event.title,
+        description: event.description,
+        provider: event.provider,
+        startAt: event.start_at,
+        endAt: event.end_at,
+        location: event.location,
+        ownerEmail: ownerEmail || ''
+      });
+    }
+
+    res.json({
+      created: created.length,
+      skipped: skipped.length,
+      items: created,
+      ...(skipped.length > 0 ? { skippedItems: skipped } : {})
+    });
+  } catch (error) {
+    console.error('语音事件批量创建失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 语音转写 + 事件解析（Flutter App → Python Pipeline 桥接）
+const { execFile } = require('child_process');
+const PIPELINE_DIR = '/Users/lizirui/Desktop/framene_v1_1';
+
+function runPipeline(args, input) {
+  return new Promise((resolve, reject) => {
+    const child = execFile('python3', args, {
+      cwd: PIPELINE_DIR,
+      maxBuffer: 1024 * 1024,
+      timeout: 60000,
+      env: { ...process.env },
+    }, (error, stdout, stderr) => {
+      if (error) {
+        if (stderr) console.error('[pipeline stderr]', stderr);
+        return reject(new Error(`Pipeline 执行失败: ${error.message}`));
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (e) {
+        reject(new Error('Pipeline 返回了无效 JSON'));
+      }
+    });
+  });
+}
+
+app.post('/api/events/voice/transcribe', async (req, res) => {
+  try {
+    const { text, audio_base64 } = req.body;
+
+    // 文字模式
+    if (text && typeof text === 'string' && text.trim().length > 0) {
+      const result = await runPipeline(
+        ['main.py', '--text', text.trim(), '--json'],
+      );
+      return res.json({
+        rawTranscript: result.rawTranscript || '',
+        cleanedRequest: result.cleanedRequest || '',
+        events: result.events || [],
+        calendarEvents: result.calendarEvents || [],
+        warnings: result.warnings || [],
+        analysis: result.analysis || {},
+        timings: result._timings || {},
+      });
+    }
+
+    // 音频模式
+    if (audio_base64 && typeof audio_base64 === 'string') {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      const tmpFile = path.join(os.tmpdir(), `framene_voice_${Date.now()}.wav`);
+
+      // 解码 base64 → WAV 文件
+      const buffer = Buffer.from(audio_base64, 'base64');
+      fs.writeFileSync(tmpFile, buffer);
+
+      try {
+        const result = await runPipeline(
+          ['main.py', '--wav', tmpFile, '--json'],
+        );
+        return res.json({
+          rawTranscript: result.rawTranscript || '',
+          cleanedRequest: result.cleanedRequest || '',
+          events: result.events || [],
+          calendarEvents: result.calendarEvents || [],
+          warnings: result.warnings || [],
+          analysis: result.analysis || {},
+          timings: result._timings || {},
+        });
+      } finally {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+      }
+    }
+
+    return res.status(400).json({ error: '缺少 text 或 audio_base64 字段' });
+  } catch (error) {
+    console.error('语音转写失败:', error);
     res.status(500).json({ error: error.message });
   }
 });
