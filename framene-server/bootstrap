@@ -1,0 +1,4 @@
+#!/bin/bash
+# FrameNe 后端 - FC 自定义运行时入口
+echo "[FC Bootstrap] Starting FrameNe API..."
+node index.js

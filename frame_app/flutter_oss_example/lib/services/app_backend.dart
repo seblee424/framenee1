@@ -628,13 +628,11 @@ class AppBackend {
   ) async {
     final savedEvents = <CalendarEvent>[];
     try {
-      // 语音端点支持 X-API-Key 鉴权（Demo 模式也能用）
       final url = Uri.parse('${AliyunConfig.apiBaseUrl}/api/events/voice');
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'X-API-Key': '2c7397b53a9856109d98c60a47e368b321588ed5263b3807',
       };
-      // 如果已登录，也带上 Bearer token
       final token = await ApiService.getToken();
       if (token != null) {
         headers['Authorization'] = 'Bearer $token';
@@ -656,7 +654,6 @@ class AppBackend {
             savedEvents.add(CalendarEvent.fromJson(item as Map<String, dynamic>));
           }
         }
-        // 同时更新本地缓存，确保 Demo 模式下 _loadData 能读到
         final prefs = await _prefs;
         final raw = prefs.getString(_eventsKey);
         final List<dynamic> existing =
@@ -675,7 +672,6 @@ class AppBackend {
       }
       throw Exception('保存失败: ${response.statusCode}');
     } catch (_) {
-      // Fallback: save locally
       for (final ce in calendarEvents) {
         final event = CalendarEvent(
           id: _randomId(),
@@ -693,8 +689,6 @@ class AppBackend {
     }
     return savedEvents;
   }
-
-  
 
   /// 更新事件
   static Future<CalendarEvent> updateEvent(

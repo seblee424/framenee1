@@ -1203,11 +1203,11 @@ class _CalendarTabState extends State<CalendarTab> {
     );
   }
 
-  /// 语音输入对话框
+  /// 语音输入文本控制器
   final _voiceController = TextEditingController();
   bool _isProcessingVoice = false;
 
-  
+  /// 显示语音输入弹窗
   Future<void> _showVoiceDialog() async {
     _voiceController.clear();
     final result = await showModalBottomSheet<dynamic>(
@@ -1216,103 +1216,122 @@ class _CalendarTabState extends State<CalendarTab> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (dialogCtx) {
+      builder: (ctx) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(
-            24, 8, 24,
-            MediaQuery.of(dialogCtx).viewInsets.bottom + 24,
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 16,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Center(
                 child: Container(
-                  width: 40, height: 4,
-                  margin: const EdgeInsets.only(bottom: 20),
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
                     color: Colors.grey.shade300,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-              Row(children: [
-                Icon(Icons.mic, color: Colors.orange.shade700, size: 28),
-                const SizedBox(width: 10),
-                const Text('语音添加事件',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              ]),
-              const SizedBox(height: 6),
-              Text('输入你想添加的日程，AI 会自动识别并创建',
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 14)),
+              const Text(
+                '语音或文字添加日程',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '输入描述，例如："明天下午3点和张三开会"',
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+              ),
               const SizedBox(height: 16),
-              TextField(
-                controller: _voiceController,
-                autofocus: true,
-                maxLines: 3,
-                decoration: InputDecoration(
-                  hintText: '例如：周日十点带Lucas剪头发',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.send_rounded, color: Colors.orange),
-                    onPressed: () {
-                      final text = _voiceController.text.trim();
-                      if (text.isEmpty) return;
-                      Navigator.pop(dialogCtx, text);
-                    },
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: TextField(
+                  controller: _voiceController,
+                  maxLines: 4,
+                  minLines: 2,
+                  decoration: const InputDecoration(
+                    hintText: '输入日程描述...',
+                    border: InputBorder.none,
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _isProcessingVoice ? null : () async {
+                    final text = _voiceController.text.trim();
+                    if (text.isEmpty) return;
+                    setState(() => _isProcessingVoice = true);
+                    try {
+                      final result = await AppBackend.transcribeVoice(text);
+                      final calendarEvents = result['calendarEvents'] as List<dynamic>? ?? [];
+                      if (calendarEvents.isNotEmpty) {
+                        final user = widget.user;
+                        final events = await AppBackend.saveVoiceEvents(
+                          calendarEvents.cast<Map<String, dynamic>>(),
+                          user,
+                        );
+                        if (events.isNotEmpty) {
+                          // 跳转到第一个事件的日期
+                          final firstDate = DateTime.parse(events.first.startAt);
+                          setState(() {
+                            _focusedDay = firstDate;
+                            _selectedDate = firstDate;
+                          });
+                          _fetchEvents();
+                          Navigator.of(ctx).pop();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('已创建 ${events.length} 个事件')),
+                          );
+                        }
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('未能解析出日程事件，请重新描述')),
+                        );
+                      }
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('处理失败: $e')),
+                      );
+                    } finally {
+                      setState(() => _isProcessingVoice = false);
+                    }
+                  },
+                  icon: _isProcessingVoice
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.auto_awesome),
+                  label: Text(_isProcessingVoice ? '处理中...' : '智能解析'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
         );
       },
     );
-
-    if (result == null || result is! String) return;
-    final text = result as String;
-
-    if (!mounted) return;
-    setState(() => _status = '正在识别: $text');
-
-    try {
-      final apiResult = await AppBackend.transcribeVoice(text);
-      final calendarEvents = (apiResult['calendarEvents'] as List<dynamic>?)
-          ?.cast<Map<String, dynamic>>() ?? [];
-
-      if (calendarEvents.isEmpty) {
-        setState(() => _status = '未识别到事件');
-        return;
-      }
-
-      setState(() => _status = '正在保存 ${calendarEvents.length} 个事件...');
-      final saved = await AppBackend.saveVoiceEvents(calendarEvents, widget.user);
-      await _loadData();
-
-      if (!mounted) return;
-
-      // 自动导航到第一个事件的日期，切到月视图方便看到
-      if (saved.isNotEmpty) {
-        try {
-          final firstDate = DateTime.parse(saved.first.startAt);
-          _selectedDate = firstDate;
-          _isMonthView = true;
-          _viewMonth = DateTime(firstDate.year, firstDate.month);
-        } catch (_) {}
-      }
-
-      final titles = saved.map((e) => e.title).join('、');
-      final dates = saved.map((e) {
-        try { final d = DateTime.parse(e.startAt); return '${d.month}/${d.day}'; } catch (_) { return '?'; }
-      }).join(', ');
-      setState(() => _status = '已添加: $titles ($dates)');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _status = '失败: $e');
-    }
   }
 
   /// 弹出日历设置弹窗（飞书连接）

@@ -275,6 +275,30 @@ async function ensureAllTables() {
       updated_at timestamptz not null default now()
     );`);
 
+    // verification_codes 表（手机验证码）
+    await pool.query(`create table if not exists verification_codes (
+      id serial primary key,
+      phone varchar(20) not null,
+      code varchar(6) not null,
+      used boolean not null default false,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now()
+    );`);
+    await pool.query('create index if not exists verification_codes_phone_idx on verification_codes (phone)');
+    await pool.query('create index if not exists verification_codes_created_at_idx on verification_codes (created_at desc)');
+
+    // email_verification_codes 表（邮箱验证码）
+    await pool.query(`create table if not exists email_verification_codes (
+      id serial primary key,
+      email varchar(255) not null,
+      code varchar(6) not null,
+      used boolean not null default false,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now()
+    );`);
+    await pool.query('create index if not exists email_verification_codes_email_idx on email_verification_codes (email)');
+    await pool.query('create index if not exists email_verification_codes_created_at_idx on email_verification_codes (created_at desc)');
+
     console.log('✅ 所有业务表已就绪');
   } catch (err) {
     console.error('❌ 初始化业务表失败:', err.message);
@@ -717,7 +741,7 @@ app.get('/api/auth/dingtalk-callback', async (req, res) => {
   try {
     const { authCode } = req.query;
     if (!authCode) {
-      return res.redirect(`${config.appUrl}/?auth_error=缺少授权码`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=缺少授权码`);
     }
 
     // 1. 用 authCode 换取用户 accessToken
@@ -735,7 +759,7 @@ app.get('/api/auth/dingtalk-callback', async (req, res) => {
     if (!tokenResp.ok) {
       const err = await tokenResp.text();
       console.error('钉钉 token 换取失败:', err);
-      return res.redirect(`${config.appUrl}/?auth_error=token换取失败`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=token换取失败`);
     }
 
     const tokenData = await tokenResp.json();
@@ -748,7 +772,7 @@ app.get('/api/auth/dingtalk-callback', async (req, res) => {
     if (!userResp.ok) {
       const err = await userResp.text();
       console.error('钉钉用户信息获取失败:', err);
-      return res.redirect(`${config.appUrl}/?auth_error=用户信息获取失败`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=用户信息获取失败`);
     }
 
     const userInfo = await userResp.json();
@@ -779,10 +803,10 @@ app.get('/api/auth/dingtalk-callback', async (req, res) => {
 
     // 5. 生成 JWT 并跳转回前端
     const token = generateToken(user.id);
-    res.redirect(`${config.appUrl}/?dingtalk_connected=true`);
+    fcRedirect(res, `${config.appUrl}/?dingtalk_connected=true`);
   } catch (error) {
     console.error('钉钉登录回调失败:', error);
-    res.redirect(`${config.appUrl}/?auth_error=${encodeURIComponent(error.message)}`);
+    fcRedirect(res, `${config.appUrl}/?auth_error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -871,6 +895,14 @@ app.post('/api/auth/dingtalk-login', async (req, res) => {
 });
 
 // ============================================
+// 辅助函数：FC 兼容的重定向（返回 HTML 页面，非 302 跳转）
+// FC 的 .fcapp.run 域名禁止 302 跳转到外部地址
+// ============================================
+function fcRedirect(res, url) {
+  res.redirect(url);
+}
+
+// ============================================
 // 飞书日历 OAuth
 // ============================================
 
@@ -903,10 +935,10 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
   try {
     const { code, state } = req.query;
     if (!code) {
-      return res.redirect(`${config.appUrl}/?auth_error=缺少授权码`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=缺少授权码`);
     }
     if (!state) {
-      return res.redirect(`${config.appUrl}/?auth_error=缺少state参数`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=缺少state参数`);
     }
 
     // 查找 state 关联的用户
@@ -916,7 +948,7 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
       [String(state)]
     );
     if (stateResult.rows.length === 0) {
-      return res.redirect(`${config.appUrl}/?auth_error=state无效或已过期`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=state无效或已过期`);
     }
     const userId = stateResult.rows[0].user_id;
 
@@ -937,14 +969,14 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
 
     if (!tokenResp.ok) {
       console.error('飞书token换取HTTP失败:', tokenRespBody);
-      return res.redirect(`${config.appUrl}/?auth_error=token换取失败`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=token换取失败`);
     }
 
     const tokenData = JSON.parse(tokenRespBody);
     const accessToken = tokenData.data?.access_token;
     if (!accessToken) {
       console.error('飞书token为空, 完整响应:', tokenRespBody);
-      return res.redirect(`${config.appUrl}/?auth_error=token为空`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=token为空`);
     }
     
     console.log(`飞书token换取成功, accessToken前20位: ${accessToken.substring(0, 20)}...`);
@@ -954,7 +986,7 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });
     if (!userInfoResp.ok) {
-      return res.redirect(`${config.appUrl}/?auth_error=用户信息获取失败`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=用户信息获取失败`);
     }
 
     const userInfo = await userInfoResp.json();
@@ -962,7 +994,7 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
     const feishuName = userInfo.data?.name || '飞书用户';
 
     if (!feishuUserId) {
-      return res.redirect(`${config.appUrl}/?auth_error=未获取到用户ID`);
+      return fcRedirect(res, `${config.appUrl}/?auth_error=未获取到用户ID`);
     }
 
     // 存储飞书 Token
@@ -981,10 +1013,10 @@ app.get('/api/auth/feishu-callback', async (req, res) => {
 
     console.log(`飞书日历已连接: 用户 ${userId}, 飞书ID ${feishuUserId}`);
 
-    res.redirect(`${config.appUrl}/?feishu_connected=true`);
+    fcRedirect(res, `${config.appUrl}/?feishu_connected=true`);
   } catch (error) {
     console.error('飞书回调处理失败:', error);
-    res.redirect(`${config.appUrl}/?auth_error=${encodeURIComponent(error.message)}`);
+    fcRedirect(res, `${config.appUrl}/?auth_error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -1755,7 +1787,8 @@ app.get('/api/health', (req, res) => {
 // ============================================
 // 启动服务器
 // 启动服务器
-const PORT = process.env.PORT || 3000;
+// 兼容本地开发（PORT）和阿里云 FC 自定义运行时（FC_SERVER_PORT）
+const PORT = process.env.FC_SERVER_PORT || process.env.PORT || 3000;
 app.listen(PORT, async () => {
   // 初始化 RDS 表
   await ensureAllTables();
