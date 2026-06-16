@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'dart:async';
 import 'dart:html' as html;
+import 'dart:js' as js;
+import 'dart:js_util' as js_util;
 
 import '../models/app_user.dart';
 import '../models/calendar_event.dart';
@@ -132,6 +134,135 @@ class _CalendarTabState extends State<CalendarTab> {
         _weatherError = e.toString().replaceFirst('Exception: ', '');
         _weatherLoading = false;
       });
+    }
+  }
+
+  /// 启动语音识别（浏览器 Web Speech API）
+  void _startVoiceRecognition() {
+    try {
+      // 通过 js_util 访问浏览器 webkitSpeechRecognition
+      final srCtor = js_util.getProperty(js.context, 'webkitSpeechRecognition') ??
+                      js_util.getProperty(js.context, 'SpeechRecognition');
+      if (srCtor == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('您的浏览器暂不支持语音识别，请使用 Chrome')),
+        );
+        return;
+      }
+
+      final recognition = js_util.callConstructor(srCtor, []);
+      js_util.setProperty(recognition, 'lang', 'zh-CN');
+      js_util.setProperty(recognition, 'continuous', false);
+      js_util.setProperty(recognition, 'interimResults', true);
+
+      js_util.setProperty(recognition, 'onresult', js.allowInterop((event) {
+        String finalText = '';
+        final results = js_util.getProperty(event, 'results');
+        final length = js_util.getProperty(results, 'length') as int;
+        for (int i = 0; i < length; i++) {
+          final result = js_util.getProperty(results, i);
+          if (js_util.getProperty(result, 'isFinal') == true) {
+            final transcript = js_util.getProperty(
+              js_util.getProperty(result, 0), 'transcript',
+            ) as String?;
+            if (transcript != null) finalText += transcript;
+          }
+        }
+        if (finalText.isNotEmpty) {
+          _voiceController.text = _voiceController.text + finalText;
+        }
+      }));
+
+      js_util.setProperty(recognition, 'onerror', js.allowInterop((error) {
+        final errorType = js_util.getProperty(error, 'error') as String?;
+        String msg;
+        if (errorType == 'not-allowed') {
+          msg = '麦克风权限被拒，请在地址栏🔒开启权限';
+        } else if (errorType == 'no-speech') {
+          msg = '没有检测到语音';
+        } else {
+          msg = '语音识别出错: $errorType';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }));
+
+      js_util.callMethod(recognition, 'start', []);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('正在聆听...'), duration: Duration(seconds: 2)),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('语音识别启动失败: $e')),
+      );
+    }
+  }
+
+  /// 同步日程到 Web 端
+  Future<void> _syncToWeb() async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('正在同步到 Web...')),
+    );
+    try {
+      await AppBackend.syncCalendarToWeb(widget.user, events: _events.map((e) => e.toJson()).toList());
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('同步成功 ✅'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('同步失败: $error'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// 删除事件确认弹窗
+  Future<void> _confirmDeleteEvent(CalendarEvent event) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除事件'),
+        content: Text('确定要删除「${event.title}」吗？\n此操作会同步到阿里云数据库。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await AppBackend.deleteEvent(event.id);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('事件已删除'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        _loadData();
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('删除失败: $error'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -441,8 +572,11 @@ class _CalendarTabState extends State<CalendarTab> {
       if (!mounted) return;
       setState(() {
         _events = [..._events, event];
+        _selectedDate = DateTime.tryParse(event.startAt) ?? DateTime.now();
+        _viewMonth = DateTime(_selectedDate.year, _selectedDate.month);
         _status = '已添加事件 "${event.title}"';
       });
+      _loadData(); // 刷新服务器数据
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -859,6 +993,19 @@ class _CalendarTabState extends State<CalendarTab> {
                         ],
                       ),
                     ),
+                    // 删除按钮
+                    GestureDetector(
+                      onTap: () => _confirmDeleteEvent(event),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(Icons.delete_outline,
+                            color: Colors.red.shade400, size: 18),
+                      ),
+                    ),
                   ],
                 ),
               );
@@ -1256,14 +1403,38 @@ class _CalendarTabState extends State<CalendarTab> {
                   border: Border.all(color: Colors.grey.shade200),
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: TextField(
-                  controller: _voiceController,
-                  maxLines: 4,
-                  minLines: 2,
-                  decoration: const InputDecoration(
-                    hintText: '输入日程描述...',
-                    border: InputBorder.none,
-                  ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _voiceController,
+                        maxLines: 4,
+                        minLines: 2,
+                        decoration: const InputDecoration(
+                          hintText: '说话或输入日程描述...',
+                          border: InputBorder.none,
+                        ),
+                      ),
+                    ),
+                    // 语音识别按钮
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: GestureDetector(
+                        onTap: () => _startVoiceRecognition(),
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blue.shade200),
+                          ),
+                          child: const Icon(Icons.mic, color: Colors.blue, size: 22),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 16),
@@ -1293,7 +1464,7 @@ class _CalendarTabState extends State<CalendarTab> {
                           _loadData();
                           Navigator.of(ctx).pop();
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('已创建 ${events.length} 个事件')),
+                            SnackBar(content: Text('解析录入成功')),
                           );
                         }
                       } else {
@@ -1315,11 +1486,30 @@ class _CalendarTabState extends State<CalendarTab> {
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.auto_awesome),
-                  label: Text(_isProcessingVoice ? '处理中...' : '智能解析'),
+                      : const Icon(Icons.mic),
+                  label: Text(_isProcessingVoice ? '处理中...' : '语音录入日程'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.orange,
                     foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+              ),
+              // 同步到 Web
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => _syncToWeb(),
+                  icon: const Icon(Icons.cloud_upload, size: 18),
+                  label: const Text('日程同步到web端'),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: Colors.blue.shade50,
+                    foregroundColor: Colors.blue.shade700,
+                    side: BorderSide(color: Colors.blue.shade300),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),

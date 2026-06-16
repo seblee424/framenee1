@@ -250,10 +250,45 @@ class _AlbumTabState extends State<AlbumTab> {
                   ),
                 ),
               ),
+
+            // Sync button
+            if (!_isLoading)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _syncToWeb(),
+                    icon: const Icon(Icons.cloud_sync),
+                    label: const Text('同步相册到 Web'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: Colors.blue.shade50,
+                      foregroundColor: Colors.blue.shade700,
+                      side: BorderSide(color: Colors.blue.shade300),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _syncToWeb() async {
+    setState(() => _status = '正在同步到 Web...');
+    try {
+      await AppBackend.syncPhotosToWeb(widget.user);
+      if (!mounted) return;
+      setState(() => _status = '同步成功 ✅');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _status = error.toString().replaceFirst('Exception: ', ''));
+    }
   }
 
   Widget _buildPhotoItem(MediaAsset asset, int index) {

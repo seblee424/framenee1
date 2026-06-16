@@ -1,4 +1,4 @@
-import { ListTodo, Home, CheckCircle2, Circle, Trash2, Award } from 'lucide-react';
+import { ListTodo, Home, Award } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useAppContext } from '../context/AppContext';
 
@@ -9,12 +9,9 @@ interface TodoDetailPageProps {
 export function TodoDetailPage({ onClose }: TodoDetailPageProps) {
   const { tasks, toggleTaskCompletion, deleteTask, familyMembers } = useAppContext();
 
-  // Group tasks by date
   const tasksByDate = tasks.reduce((acc, task) => {
     const date = task.dueDate;
-    if (!acc[date]) {
-      acc[date] = [];
-    }
+    if (!acc[date]) acc[date] = [];
     acc[date].push(task);
     return acc;
   }, {} as Record<string, typeof tasks>);
@@ -41,87 +38,92 @@ export function TodoDetailPage({ onClose }: TodoDetailPageProps) {
     }
   };
 
+  const getDateLabel = (date: string) => {
+    switch (date) {
+      case 'Today': return '今天';
+      case 'Tomorrow': return '明天';
+      default: return date;
+    }
+  };
+
   return (
     <div className="size-full bg-gradient-to-br from-slate-100 to-slate-200 flex flex-col">
-      {/* Header */}
+      {/* 顶部标题 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <ListTodo className="w-8 h-8 text-green-500" />
-            <h2 className="text-2xl">Family To-Do List</h2>
+            <h2 className="text-2xl">待办事项</h2>
           </div>
           <div className="flex items-center gap-4">
             <div className="px-4 py-2 bg-green-100 text-green-700 rounded-lg">
-              {completedCount} / {tasks.length} Completed
+              {completedCount} / {tasks.length} 已完成
             </div>
             <div className="px-4 py-2 bg-amber-100 text-amber-700 rounded-lg flex items-center gap-2">
               <Award className="w-5 h-5" />
-              <span>{totalPoints} Points Earned</span>
+              <span>获得 {totalPoints} 分</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Content */}
+      {/* 待办列表 */}
       <div className="flex-1 p-6 overflow-auto">
-        <div className="grid grid-cols-3 gap-6">
-          {/* Task List */}
-          <div className="col-span-2 space-y-6">
+        {sortedDates.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-muted-foreground">
+            暂无待办事项
+          </div>
+        ) : (
+          <div className="space-y-6">
             {sortedDates.map(date => (
-              <div key={date} className="bg-white/90 backdrop-blur-sm rounded-2xl p-6 shadow-lg">
-                <h3 className="mb-4 flex items-center gap-2">
-                  <span>{date}</span>
-                  <span className="text-sm text-muted-foreground">
-                    ({tasksByDate[date].length} tasks)
-                  </span>
-                </h3>
-
+              <div key={date}>
+                <h3 className="text-lg mb-4">{getDateLabel(date)}</h3>
                 <div className="space-y-3">
                   {tasksByDate[date].map(task => (
                     <motion.div
                       key={task.id}
                       layout
-                      className={`
-                        p-4 rounded-lg border transition-all
-                        ${task.completed ? 'bg-muted border-muted' : 'bg-white border-border hover:border-green-500'}
-                      `}
+                      className="bg-white/90 backdrop-blur-sm rounded-xl p-4 shadow-lg"
                     >
                       <div className="flex items-start gap-3">
                         <button
                           onClick={() => toggleTaskCompletion(task.id)}
-                          className="mt-1 flex-shrink-0 hover:scale-110 transition-transform"
+                          className={`mt-0.5 flex-shrink-0 w-5 h-5 rounded-full border-2 transition-colors ${
+                            task.completed
+                              ? 'bg-green-500 border-green-500 text-white'
+                              : 'border-gray-300 hover:border-green-500'
+                          } flex items-center justify-center`}
                         >
-                          {task.completed ? (
-                            <CheckCircle2 className="w-6 h-6 text-green-500" />
-                          ) : (
-                            <Circle className="w-6 h-6 text-muted-foreground" />
+                          {task.completed && (
+                            <motion.span
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                            >
+                              ✓
+                            </motion.span>
                           )}
                         </button>
 
                         <div className="flex-1 min-w-0">
-                          <div className={`mb-2 ${task.completed ? 'line-through text-muted-foreground' : ''}`}>
+                          <div className={`text-sm mb-1 ${task.completed ? 'line-through text-muted-foreground' : ''}`}>
                             {task.text}
                           </div>
-
-                          <div className="flex items-center gap-3 flex-wrap">
-                            <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs">
-                              👤 {task.assignee}
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <span>👤 {task.assignee}</span>
+                            <span className={`px-1.5 py-0.5 rounded-full ${getPriorityColor(task.priority)}`}>
+                              {task.priority === 'high' ? '高优先级' : task.priority === 'medium' ? '中优先级' : '低优先级'}
                             </span>
-                            <span className="px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs flex items-center gap-1">
-                              <Award className="w-3 h-3" />
-                              {task.points} pts
-                            </span>
-                            <span className={`px-3 py-1 rounded-full text-xs ${getPriorityColor(task.priority)}`}>
-                              {task.priority} priority
-                            </span>
+                            <span>{task.points} 分</span>
                           </div>
                         </div>
 
                         <button
                           onClick={() => deleteTask(task.id)}
-                          className="p-2 hover:bg-destructive/10 hover:text-destructive rounded-lg transition-colors flex-shrink-0"
+                          className="p-1 hover:bg-red-50 rounded transition-colors text-muted-foreground hover:text-red-500"
                         >
-                          <Trash2 className="w-5 h-5" />
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
                         </button>
                       </div>
                     </motion.div>
@@ -129,59 +131,11 @@ export function TodoDetailPage({ onClose }: TodoDetailPageProps) {
                 </div>
               </div>
             ))}
-
-            {sortedDates.length === 0 && (
-              <div className="bg-white/90 backdrop-blur-sm rounded-2xl p-12 shadow-lg text-center">
-                <p className="text-muted-foreground">No tasks scheduled. Add a task to get started!</p>
-              </div>
-            )}
           </div>
-
-          {/* Family Leaderboard */}
-          <div className="bg-white/90 backdrop-blur-sm rounded-2xl p-6 shadow-lg">
-            <h3 className="mb-4">Family Leaderboard</h3>
-            <div className="space-y-3">
-              {[...familyMembers]
-                .sort((a, b) => b.points - a.points)
-                .map((member, index) => (
-                  <div
-                    key={member.id}
-                    className={`
-                      p-4 rounded-lg
-                      ${index === 0 ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-white' : 'bg-muted'}
-                    `}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`
-                        w-8 h-8 rounded-full flex items-center justify-center text-sm
-                        ${index === 0 ? 'bg-white/20' : 'bg-white'}
-                      `}>
-                        {index + 1}
-                      </div>
-                      <div className="text-2xl">{member.avatar}</div>
-                      <div className="flex-1">
-                        <div className="text-sm">{member.name}</div>
-                        <div className={`text-xs ${index === 0 ? 'opacity-90' : 'text-muted-foreground'}`}>
-                          {member.points} points
-                        </div>
-                      </div>
-                      {index === 0 && <span className="text-xl">🏆</span>}
-                    </div>
-                  </div>
-                ))}
-            </div>
-
-            <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <div className="text-sm text-blue-900 mb-2">💡 Tip</div>
-              <div className="text-xs text-blue-700">
-                Complete tasks to earn points and climb the leaderboard!
-              </div>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Bottom Navigation */}
+      {/* 底部导航 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <motion.button
           whileHover={{ scale: 1.05 }}
@@ -190,7 +144,7 @@ export function TodoDetailPage({ onClose }: TodoDetailPageProps) {
           className="w-full py-4 bg-primary text-primary-foreground rounded-xl flex items-center justify-center gap-2 shadow-lg"
         >
           <Home className="w-6 h-6" />
-          <span>Back to Home</span>
+          <span>返回首页</span>
         </motion.button>
       </div>
     </div>

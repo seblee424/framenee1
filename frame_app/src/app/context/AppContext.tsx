@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { cloneDashboardMockData } from '@/mocks/dashboardMockData';
 import { createDashboardRepository } from '@/services/frameNe/dashboardRepository';
-import type { AppDataSource, CalendarEvent, FamilyMember, Photo, Reward, Task } from '@/types/app';
+import type { AppDataSnapshot, AppDataSource, CalendarEvent, FamilyMember, Photo, Reward, Task } from '@/types/app';
 
 interface AppContextType {
   familyMembers: FamilyMember[];
@@ -22,7 +21,13 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [appData, setAppData] = useState(cloneDashboardMockData);
+  const [appData, setAppData] = useState<AppDataSnapshot>({
+    familyMembers: [],
+    calendarEvents: [],
+    tasks: [],
+    rewards: [],
+    photos: [],
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [dataSource, setDataSource] = useState<AppDataSource>('mock');
   const repositoryRef = useRef(createDashboardRepository());
@@ -41,8 +46,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setAppData(result.data);
       setDataSource(result.source);
     } catch (error) {
-      console.error('Failed to load dashboard data, falling back to mock data.', error);
-      setAppData(cloneDashboardMockData());
+      console.error('Failed to load dashboard data, starting with empty state.', error);
+      setAppData({
+        familyMembers: [],
+        calendarEvents: [],
+        tasks: [],
+        rewards: [],
+        photos: [],
+      });
       setDataSource('mock');
     } finally {
       setIsLoading(false);

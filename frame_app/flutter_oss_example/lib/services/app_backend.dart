@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:html' as html;
+import 'dart:js' as js;
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -276,7 +277,76 @@ class AppBackend {
     return user;
   }
 
-  /// 登出
+  /// 同步照片到 Web 端
+  static Future<void> syncPhotosToWeb(AppUser user) async {
+    try {
+      final result = await ApiService.get('/api/photos');
+      final items = result['items'] as List<dynamic>? ?? [];
+      final ownerEmail = user.email ?? user.phone ?? user.id;
+
+      if (items.isNotEmpty) {
+        await ApiService.post('/api/web/events/sync', body: {
+          'items': items.map((item) => {
+            'title': '📷 ${item['file_name'] ?? '照片'}',
+            'startAt': DateTime.now().toIso8601String(),
+            'endAt': DateTime.now().add(const Duration(hours: 1)).toIso8601String(),
+            'description': '照片同步：${item['url'] ?? ''}',
+            'sourceAppUserId': user.id,
+          }).toList(),
+          'sourceEmail': ownerEmail,
+        });
+      }
+    } catch (error) {
+      throw Exception('同步到Web端失败: $error');
+    }
+  }
+
+  /// 同步日程到 Web 端
+  static Future<void> syncCalendarToWeb(AppUser user, {List<Map<String, dynamic>>? events}) async {
+    try {
+      final ownerEmail = user.email ?? user.phone ?? user.id;
+      List<Map<String, dynamic>> items;
+
+      if (events != null) {
+        items = events;
+      } else {
+        // 回退：从后端获取
+        final result = await ApiService.get('/api/events');
+        items = (result['items'] as List<dynamic>?)
+                ?.map((item) => item as Map<String, dynamic>)
+                .toList() ??
+            [];
+      }
+
+      if (items.isEmpty) return;
+
+      await ApiService.post('/api/web/events/sync', body: {
+        'items': items.map((item) {
+          return {
+            'title': item['title'] ?? '',
+            'startAt': item['start_at'] ?? item['startAt'] ?? '',
+            'endAt': item['end_at'] ?? item['endAt'] ?? '',
+            'description': item['description'] ?? '',
+            'location': item['location'] ?? '',
+            'sourceAppUserId': user.id,
+          };
+        }).toList(),
+        'sourceEmail': ownerEmail,
+      });
+    } catch (error) {
+      throw Exception('同步日程到Web端失败: $error');
+    }
+  }
+
+  /// 同步账号信息到 Web 端
+  static Future<void> syncAccountToWeb(AppUser user) async {
+    final ownerEmail = user.email ?? user.phone ?? user.id;
+    await ApiService.post('/api/web/accounts/sync', body: {
+      'email': ownerEmail,
+      'name': user.name,
+      'loginProvider': user.loginProvider,
+    });
+  }
   static Future<void> logout() async {
     try {
       await ApiService.post('/api/auth/logout');
@@ -595,14 +665,30 @@ class AppBackend {
     await _saveJsonList(_eventsKey, updated.map((e) => e.toJson()).toList());
   }
 
-  /// 语音转写：发送文本到 Pipeline，返回解析后的事件
+  /// 语音转写：发送文本到解析 API，返回解析后的事件
   static Future<Map<String, dynamic>> transcribeVoice(String text) async {
     try {
+      // 获取浏览器时区
+      final timezone = js.context.callMethod('Intl.DateTimeFormat').callMethod('resolvedOptions')['timeZone'] ?? 'Asia/Shanghai';
+      final offset = DateTime.now().timeZoneOffset.inMinutes;
+
       final result = await ApiService.post(
-        '/api/events/voice/transcribe',
-        body: {'text': text},
+        '/api/web/events/parse-voice',
+        body: {
+          'text': text,
+          'timezone': timezone,
+          'utcOffset': offset,
+        },
       );
-      return result;
+      final items = result['items'] as List<dynamic>? ?? [];
+      return {
+        'calendarEvents': items.map((item) => {
+          'title': item['title'] ?? text,
+          'startAt': item['startAt'] ?? DateTime.now().toIso8601String(),
+          'endAt': item['endAt'] ?? DateTime.now().add(const Duration(hours: 1)).toIso8601String(),
+          'description': text,
+        }).toList(),
+      };
     } catch (error) {
       throw Exception('语音识别失败: $error');
     }
@@ -621,70 +707,24 @@ class AppBackend {
     }
   }
 
-  /// 批量保存语音创建的事件到后端+RDS
+  /// 批量保存语音创建的事件到 calendar_events（Flutter 端旧表）
   static Future<List<CalendarEvent>> saveVoiceEvents(
     List<Map<String, dynamic>> calendarEvents,
     AppUser user,
   ) async {
     final savedEvents = <CalendarEvent>[];
-    try {
-      final url = Uri.parse('${AliyunConfig.apiBaseUrl}/api/events/voice');
-      final headers = <String, String>{
-        'Content-Type': 'application/json',
-        'X-API-Key': '2c7397b53a9856109d98c60a47e368b321588ed5263b3807',
-      };
-      final token = await ApiService.getToken();
-      if (token != null) {
-        headers['Authorization'] = 'Bearer $token';
-      }
-
-      final response = await http.post(
-        url,
-        headers: headers,
-        body: jsonEncode({
-          'items': calendarEvents,
-          'userId': 1,
-        }),
-      );
-
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final result = jsonDecode(response.body) as Map<String, dynamic>;
-        if (result['items'] != null && result['items'] is List) {
-          for (final item in result['items']) {
-            savedEvents.add(CalendarEvent.fromJson(item as Map<String, dynamic>));
-          }
-        }
-        final prefs = await _prefs;
-        final raw = prefs.getString(_eventsKey);
-        final List<dynamic> existing =
-            raw != null ? jsonDecode(raw) as List<dynamic> : [];
-        final existingIds = existing.map((e) {
-          final json = e as Map<String, dynamic>;
-          return json['id'] as String? ?? '';
-        }).toSet();
-        for (final ev in savedEvents) {
-          if (!existingIds.contains(ev.id)) {
-            existing.add(ev.toJson());
-          }
-        }
-        await prefs.setString(_eventsKey, jsonEncode(existing));
-        return savedEvents;
-      }
-      throw Exception('保存失败: ${response.statusCode}');
-    } catch (_) {
-      for (final ce in calendarEvents) {
-        final event = CalendarEvent(
-          id: _randomId(),
-          title: ce['title'] as String? ?? '',
-          description: ce['description'] as String?,
-          provider: ce['provider'] as String? ?? 'manual',
-          startAt: ce['startAt'] as String? ?? '',
-          endAt: ce['endAt'] as String? ?? '',
-          location: ce['location'] as String?,
-          ownerEmail: ce['ownerEmail'] as String? ?? user.email ?? user.id,
-        );
-        await _saveEventLocally(event, user);
-        savedEvents.add(event);
+    for (final event in calendarEvents) {
+      try {
+        final result = await ApiService.post('/api/events', body: {
+          'title': event['title'] ?? '日程',
+          'description': event['description'] ?? '',
+          'startAt': event['startAt'] ?? DateTime.now().toIso8601String(),
+          'endAt': event['endAt'] ?? DateTime.now().add(const Duration(hours: 1)).toIso8601String(),
+          'provider': 'voice',
+        });
+        savedEvents.add(CalendarEvent.fromJson(result));
+      } catch (e) {
+        print('保存语音事件失败: $e');
       }
     }
     return savedEvents;
@@ -733,7 +773,7 @@ class AppBackend {
     }
   }
 
-  /// 获取日历事件列表/// 获取日历事件列表
+  /// 获取日历事件列表（从 calendar_events 读取，Flutter 本地表）
   static Future<List<CalendarEvent>> listCalendarEvents(AppUser user) async {
     try {
       final result = await ApiService.get('/api/events');
@@ -761,7 +801,7 @@ class AppBackend {
     }
   }
 
-  /// 获取日历同步状态
+  /// 通过 AI 解析自然语言日程文本
   static Future<Map<String, dynamic>?> getCalendarSyncStatus(
       AppUser user, String provider) async {
     try {

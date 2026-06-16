@@ -1,10 +1,11 @@
 import { format } from 'date-fns';
-import { env, hasRemoteApiConfig } from '@/config/env';
-import { cloneDashboardMockData } from '@/mocks/dashboardMockData';
+import { zhCN } from 'date-fns/locale';
+import { env } from '@/config/env';
 import type { AppDataSnapshot, AppDataSource, CalendarEvent, Photo } from '@/types/app';
-import type { ApiCalendarEvent, PhotoAsset } from '@/types/api';
-import { calendarApi } from './calendar';
+import { webEventsApi } from './webEvents';
+import type { WebCalendarEvent } from './webEvents';
 import { photosApi } from './photos';
+import type { PhotoAsset } from './photos';
 
 export interface DashboardLoadResult {
   data: AppDataSnapshot;
@@ -20,59 +21,54 @@ const eventPalette = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444'];
 const toPhoto = (asset: PhotoAsset): Photo => ({
   id: asset.id,
   url: asset.url,
-  caption: asset.fileName,
-  date: asset.createdAt,
-  uploadedBy: asset.uploadedBy
+  caption: asset.file_name,
+  date: asset.created_at,
+  uploadedBy: asset.owner_email || '未知',
 });
 
-const toCalendarEvent = (event: ApiCalendarEvent, index: number): CalendarEvent => {
-  const start = new Date(event.startAt);
-
+const toCalendarEvent = (event: WebCalendarEvent, index: number): CalendarEvent => {
+  const start = new Date(event.start_at);
   return {
     id: event.id,
     title: event.title,
     date: start,
-    time: format(start, 'h:mm a'),
+    time: format(start, 'HH:mm', { locale: zhCN }),
     color: eventPalette[index % eventPalette.length],
-    assignee: event.ownerEmail || event.provider || 'Calendar',
-    description: event.description || event.location
+    assignee: 'FrameNe',
+    description: event.description || event.location,
+    completed: event.status === 'completed',
   };
 };
 
-class MockDashboardRepository implements DashboardRepository {
-  async loadInitialData() {
-    return {
-      data: cloneDashboardMockData(),
-      source: 'mock' as const
-    };
-  }
-}
-
 class RemoteDashboardRepository implements DashboardRepository {
   async loadInitialData() {
-    const mockData = cloneDashboardMockData();
+    const emptyData: AppDataSnapshot = {
+      familyMembers: [],
+      calendarEvents: [],
+      tasks: [],
+      rewards: [],
+      photos: [],
+    };
     const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
 
-    const [photoData, monthView] = await Promise.all([
-      photosApi.list(),
-      calendarApi.getMonthView(env.ownerEmail, now.getFullYear(), now.getMonth() + 1)
+    const [photoData, eventData] = await Promise.all([
+      photosApi.list().catch(() => ({ items: [] as PhotoAsset[] })),
+      webEventsApi.list(monthStart, monthEnd).catch(() => ({ items: [] as WebCalendarEvent[] })),
     ]);
 
     return {
       data: {
-        ...mockData,
+        ...emptyData,
         photos: photoData.items.map(toPhoto),
-        calendarEvents: monthView.events.map(toCalendarEvent)
+        calendarEvents: eventData.items.map((e, i) => toCalendarEvent(e, i)),
       },
-      source: 'api' as const
+      source: 'api' as const,
     };
   }
 }
 
 export const createDashboardRepository = (): DashboardRepository => {
-  if (env.useMockData || !hasRemoteApiConfig) {
-    return new MockDashboardRepository();
-  }
-
   return new RemoteDashboardRepository();
 };

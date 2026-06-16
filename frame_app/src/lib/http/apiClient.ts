@@ -1,9 +1,10 @@
 import { env } from '@/config/env';
-import type { ApiErrorResponse, ApiResponse } from '@/types/api';
 
 type Primitive = string | number | boolean;
 type QueryValue = Primitive | null | undefined;
 type QueryParams = Record<string, QueryValue>;
+
+const TOKEN_KEY = 'framene.auth_token';
 
 export class ApiClientError extends Error {
   code: string;
@@ -18,12 +19,9 @@ export class ApiClientError extends Error {
 }
 
 const toQueryString = (query?: QueryParams) => {
-  if (!query) {
-    return '';
-  }
+  if (!query) return '';
 
   const searchParams = new URLSearchParams();
-
   Object.entries(query).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
       searchParams.set(key, String(value));
@@ -34,11 +32,12 @@ const toQueryString = (query?: QueryParams) => {
   return serialized ? `?${serialized}` : '';
 };
 
-const isApiErrorResponse = <T>(payload: ApiResponse<T>): payload is ApiErrorResponse =>
-  payload.status === 'error';
+function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
 
 export class ApiClient {
-  constructor(private readonly baseUrl: string, private readonly apiKey?: string) {}
+  constructor(private readonly baseUrl: string) {}
 
   async get<T>(path: string, query?: QueryParams) {
     return this.request<T>(path, { method: 'GET' }, query);
@@ -72,37 +71,39 @@ export class ApiClient {
 
   private async request<T>(path: string, init: RequestInit, query?: QueryParams) {
     const url = `${this.baseUrl}${path}${toQueryString(query)}`;
+
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    };
+
+    // 自动附加 JWT token（如果已登录）
+    const token = getAuthToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const response = await fetch(url, {
       ...init,
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        ...(this.apiKey
-          ? {
-              Authorization: `Bearer ${this.apiKey}`,
-              apikey: this.apiKey,
-            }
-          : {}),
-        ...init.headers,
+        ...headers,
+        ...(init.headers as Record<string, string> | undefined),
       },
     });
 
-    const payload = (await response.json()) as ApiResponse<T>;
+    // 后端直接返回 JSON body，没有 status/data 包装
+    const payload = await response.json();
 
     if (!response.ok) {
-      if (isApiErrorResponse(payload)) {
-        throw new ApiClientError(payload.error.message, payload.error.code, response.status);
-      }
-
-      throw new ApiClientError(`Request failed with status ${response.status}`, 'HTTP_ERROR', response.status);
+      throw new ApiClientError(
+        payload.error || `请求失败 (${response.status})`,
+        'HTTP_ERROR',
+        response.status,
+      );
     }
 
-    if (isApiErrorResponse(payload)) {
-      throw new ApiClientError(payload.error.message, payload.error.code, response.status);
-    }
-
-    return payload.data;
+    return payload as T;
   }
 }
 
-export const apiClient = new ApiClient(env.apiBaseUrl, env.apiKey);
+export const apiClient = new ApiClient(env.apiBaseUrl);

@@ -15,6 +15,7 @@ export interface CalendarEvent {
   color: string;
   assignee: string;
   description?: string;
+  completed?: boolean;
 }
 
 export interface Task {

@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import { Calendar, Home, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar, Home, ChevronLeft, ChevronRight, Check, Trash2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, addMonths, subMonths, startOfWeek, endOfWeek, isSameMonth } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
 import { useAppContext } from '../context/AppContext';
+import { webEventsApi } from '@/services/frameNe/webEvents';
 
 interface CalendarDetailPageProps {
   onClose: () => void;
 }
 
 export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
-  const { calendarEvents, tasks } = useAppContext();
+  const { calendarEvents, reloadData } = useAppContext();
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
@@ -26,36 +28,38 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
     return calendarEvents.filter(event => isSameDay(event.date, date));
   };
 
-  const getTasksForDate = (date: Date) => {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    return tasks.filter(task => {
-      if (task.dueDate === 'Today') {
-        return isSameDay(date, today);
-      } else if (task.dueDate === 'Tomorrow') {
-        return isSameDay(date, tomorrow);
-      }
-      return false;
-    });
-  };
-
   const hasItemsOnDate = (date: Date) => {
-    return getEventsForDate(date).length > 0 || getTasksForDate(date).length > 0;
+    return getEventsForDate(date).length > 0;
   };
 
   const selectedDateEvents = getEventsForDate(selectedDate);
-  const selectedDateTasks = getTasksForDate(selectedDate);
+
+  const handleToggleComplete = async (id: string) => {
+    try {
+      await webEventsApi.toggleComplete(id);
+      await reloadData();
+    } catch (error) {
+      console.error('切换日程完成状态失败', error);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await webEventsApi.remove(id);
+      await reloadData();
+    } catch (error) {
+      console.error('删除日程失败', error);
+    }
+  };
 
   return (
     <div className="size-full bg-gradient-to-br from-slate-100 to-slate-200 flex flex-col">
-      {/* Header */}
+      {/* 顶部标题 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Calendar className="w-8 h-8 text-blue-500" />
-            <h2 className="text-2xl">Family Calendar</h2>
+            <h2 className="text-2xl">日程日历</h2>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -65,7 +69,7 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
               <ChevronLeft className="w-6 h-6" />
             </button>
             <span className="px-4 py-2 bg-muted rounded-lg min-w-[140px] text-center">
-              {format(currentMonth, 'MMMM yyyy')}
+              {format(currentMonth, 'yyyy年 M月', { locale: zhCN })}
             </span>
             <button
               onClick={nextMonth}
@@ -77,21 +81,21 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
         </div>
       </div>
 
-      {/* Content */}
+      {/* 日历内容 */}
       <div className="flex-1 p-6 overflow-auto">
         <div className="grid grid-cols-3 gap-6 h-full">
-          {/* Calendar Grid */}
+          {/* 月视图 */}
           <div className="col-span-2 bg-white/90 backdrop-blur-sm rounded-2xl p-6 shadow-lg flex flex-col">
-            {/* Day Headers */}
+            {/* 星期头 */}
             <div className="grid grid-cols-7 gap-2 mb-4">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+              {['日', '一', '二', '三', '四', '五', '六'].map(day => (
                 <div key={day} className="text-center text-muted-foreground py-2 text-sm">
                   {day}
                 </div>
               ))}
             </div>
 
-            {/* Calendar Days */}
+            {/* 日期网格 */}
             <div className="grid grid-cols-7 gap-2 flex-1">
               {calendarDays.map((day, idx) => {
                 const isSelected = isSameDay(day, selectedDate);
@@ -120,12 +124,6 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
                             style={{ backgroundColor: isSelected ? 'white' : event.color }}
                           />
                         ))}
-                        {getTasksForDate(day).length > 0 && (
-                          <div
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ backgroundColor: isSelected ? 'white' : '#10b981' }}
-                          />
-                        )}
                       </div>
                     )}
                   </button>
@@ -134,71 +132,78 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
             </div>
           </div>
 
-          {/* Selected Date Details */}
+          {/* 选中日期的详情 */}
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl p-6 shadow-lg overflow-auto">
-            <h3 className="mb-4 text-lg">{format(selectedDate, 'MMMM d, yyyy')}</h3>
+            <h3 className="mb-4 text-lg">
+              {format(selectedDate, 'M月d日 EEEE', { locale: zhCN })}
+            </h3>
 
-            {/* Events */}
+            {/* 事件列表 */}
             {selectedDateEvents.length > 0 && (
               <div className="mb-6">
-                <h4 className="text-sm text-muted-foreground mb-3">Events</h4>
+                <h4 className="text-sm text-muted-foreground mb-3">日程</h4>
                 <div className="space-y-3">
                   {selectedDateEvents.map(event => (
                     <div
                       key={event.id}
-                      className="p-3 rounded-lg border-l-4"
+                      className="p-3 rounded-lg border-l-4 flex items-center gap-3"
                       style={{ borderLeftColor: event.color, backgroundColor: `${event.color}10` }}
                     >
-                      <div className="text-sm mb-1">{event.title}</div>
-                      <div className="text-xs text-muted-foreground mb-1">{event.time}</div>
-                      <div className="text-xs text-muted-foreground">👤 {event.assignee}</div>
-                      {event.description && (
-                        <div className="text-xs text-muted-foreground mt-2 italic">
-                          {event.description}
+                      {/* 勾选完成按钮 */}
+                      <button
+                        onClick={() => handleToggleComplete(event.id)}
+                        className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                          event.completed
+                            ? 'bg-green-500 border-green-500 text-white'
+                            : 'border-gray-300 hover:border-green-500 hover:bg-green-50'
+                        }`}
+                        title={event.completed ? '标记为未完成' : '标记为已完成'}
+                      >
+                        {event.completed && <Check className="w-4 h-4" />}
+                      </button>
+
+                      {/* 事件内容 */}
+                      <div className="flex-1 min-w-0">
+                        <div
+                          className={`text-sm mb-1 ${
+                            event.completed ? 'line-through text-gray-400' : ''
+                          }`}
+                        >
+                          {event.title}
                         </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Tasks */}
-            {selectedDateTasks.length > 0 && (
-              <div className="mb-6">
-                <h4 className="text-sm text-muted-foreground mb-3">Tasks</h4>
-                <div className="space-y-3">
-                  {selectedDateTasks.map(task => (
-                    <div
-                      key={task.id}
-                      className="p-3 bg-green-50 rounded-lg border-l-4 border-green-500"
-                    >
-                      <div className="text-sm mb-1">{task.text}</div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>👤 {task.assignee}</span>
-                        <span>•</span>
-                        <span>{task.points} pts</span>
-                        <span>•</span>
-                        <span className={task.completed ? 'text-green-600' : 'text-amber-600'}>
-                          {task.completed ? '✓ Done' : 'Pending'}
-                        </span>
+                        <div className="text-xs text-muted-foreground mb-1">{event.time}</div>
+                        <div className="text-xs text-muted-foreground">👤 {event.assignee}</div>
+                        {event.description && (
+                          <div className="text-xs text-muted-foreground mt-2 italic">
+                            {event.description}
+                          </div>
+                        )}
                       </div>
+
+                      {/* 删除按钮 */}
+                      <button
+                        onClick={() => handleDelete(event.id)}
+                        className="p-1.5 rounded-lg hover:bg-red-100 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                        title="删除日程"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {selectedDateEvents.length === 0 && selectedDateTasks.length === 0 && (
+            {selectedDateEvents.length === 0 && (
               <p className="text-muted-foreground text-sm text-center py-8">
-                No events or tasks scheduled for this day
+                当天暂无日程
               </p>
             )}
           </div>
         </div>
       </div>
 
-      {/* Bottom Navigation */}
+      {/* 底部导航 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <motion.button
           whileHover={{ scale: 1.05 }}
@@ -207,7 +212,7 @@ export function CalendarDetailPage({ onClose }: CalendarDetailPageProps) {
           className="w-full py-4 bg-primary text-primary-foreground rounded-xl flex items-center justify-center gap-2 shadow-lg"
         >
           <Home className="w-6 h-6" />
-          <span>Back to Home</span>
+          <span>返回首页</span>
         </motion.button>
       </div>
     </div>

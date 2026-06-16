@@ -1,28 +1,33 @@
 import { useState, useEffect } from 'react';
-import { Image, Home, ChevronLeft, ChevronRight, Play, Pause, Calendar, User } from 'lucide-react';
+import { Image, Home, ChevronLeft, ChevronRight, Play, Pause, Calendar, User, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppContext } from '../context/AppContext';
+import { photosApi } from '../../services/frameNe/photos';
 
 interface PhotoDetailPageProps {
   onClose: () => void;
 }
 
 export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
-  const { photos } = useAppContext();
+  const { photos, reloadData } = useAppContext();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const hasPhotos = photos.length > 0;
 
-  // Auto-play slideshow
   useEffect(() => {
     if (!isPlaying || !hasPhotos) return;
-
     const interval = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % photos.length);
-    }, 5000); // 5 seconds per photo
-
+    }, 5000);
     return () => clearInterval(interval);
   }, [hasPhotos, isPlaying, photos.length]);
+
+  // 照片数量变化时，如果当前索引超出范围则回到第一张
+  useEffect(() => {
+    if (photos.length > 0 && currentIndex >= photos.length) {
+      setCurrentIndex(0);
+    }
+  }, [photos.length]);
 
   if (!hasPhotos) {
     return (
@@ -30,13 +35,13 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
         <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
           <div className="flex items-center gap-3">
             <Image className="w-8 h-8 text-purple-500" />
-            <h2 className="text-2xl">Photo Frame</h2>
+            <h2 className="text-2xl">家庭相册</h2>
           </div>
         </div>
 
         <div className="flex-1 p-6">
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg h-full flex items-center justify-center text-muted-foreground">
-            No photos available yet.
+            暂无照片
           </div>
         </div>
 
@@ -48,7 +53,7 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
             className="w-full py-4 bg-primary text-primary-foreground rounded-xl flex items-center justify-center gap-2 shadow-lg"
           >
             <Home className="w-6 h-6" />
-            <span>Back to Home</span>
+            <span>返回首页</span>
           </motion.button>
         </div>
       </div>
@@ -69,18 +74,34 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
     setIsPlaying(!isPlaying);
   };
 
+  const handleDelete = async () => {
+    const photo = photos[currentIndex];
+    if (!photo) return;
+
+    const confirmed = window.confirm(`确定删除照片「${photo.caption}」？`);
+    if (!confirmed) return;
+
+    try {
+      await photosApi.remove(photo.id);
+      await reloadData();
+      // reloadData 会触发重新渲染，useEffect 会处理索引越界
+    } catch (error) {
+      console.error('删除照片失败:', error);
+    }
+  };
+
   const goToPhoto = (index: number) => {
     setCurrentIndex(index);
   };
 
   return (
     <div className="size-full bg-gradient-to-br from-slate-100 to-slate-200 flex flex-col">
-      {/* Header */}
+      {/* 顶部标题 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Image className="w-8 h-8 text-purple-500" />
-            <h2 className="text-2xl">Photo Frame</h2>
+            <h2 className="text-2xl">家庭相册</h2>
             <span className="text-sm text-muted-foreground">
               {currentIndex + 1} / {photos.length}
             </span>
@@ -102,10 +123,10 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
         </div>
       </div>
 
-      {/* Main Photo Display */}
+      {/* 照片展示 */}
       <div className="flex-1 p-6 overflow-hidden">
         <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg h-full flex flex-col overflow-hidden">
-          {/* Large Photo */}
+          {/* 大图 */}
           <div className="flex-1 relative bg-black/5 overflow-hidden">
             <AnimatePresence mode="wait">
               <motion.img
@@ -120,7 +141,7 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
               />
             </AnimatePresence>
 
-            {/* Navigation Arrows */}
+            {/* 左右翻页按钮 */}
             <motion.button
               whileHover={{ scale: 1.1, x: -5 }}
               whileTap={{ scale: 0.9 }}
@@ -139,7 +160,18 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
               <ChevronRight className="w-8 h-8" />
             </motion.button>
 
-            {/* Photo Info Overlay */}
+            {/* 删除按钮 */}
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={handleDelete}
+              className="absolute top-4 right-4 p-3 bg-red-500 hover:bg-red-600 text-white rounded-full shadow-lg transition-colors"
+              title="删除照片"
+            >
+              <Trash2 className="w-5 h-5" />
+            </motion.button>
+
+            {/* 照片信息浮层 */}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-6">
               <motion.div
                 key={currentIndex}
@@ -152,10 +184,10 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
                 <div className="flex items-center gap-4 text-sm opacity-90">
                   <span className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
-                    {new Date(currentPhoto.date).toLocaleDateString('en-US', {
+                    {new Date(currentPhoto.date).toLocaleDateString('zh-CN', {
+                      year: 'numeric',
                       month: 'long',
                       day: 'numeric',
-                      year: 'numeric'
                     })}
                   </span>
                   <span>•</span>
@@ -168,7 +200,7 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
             </div>
           </div>
 
-          {/* Thumbnail Filmstrip */}
+          {/* 缩略图条 */}
           <div className="p-4 bg-muted/50 border-t border-border">
             <div className="flex gap-3 overflow-x-auto pb-2">
               {photos.map((photo, index) => (
@@ -203,7 +235,7 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
         </div>
       </div>
 
-      {/* Bottom Navigation */}
+      {/* 底部导航 */}
       <div className="p-6 bg-white/90 backdrop-blur-sm shadow-lg">
         <motion.button
           whileHover={{ scale: 1.05 }}
@@ -212,7 +244,7 @@ export function PhotoDetailPage({ onClose }: PhotoDetailPageProps) {
           className="w-full py-4 bg-primary text-primary-foreground rounded-xl flex items-center justify-center gap-2 shadow-lg"
         >
           <Home className="w-6 h-6" />
-          <span>Back to Home</span>
+          <span>返回首页</span>
         </motion.button>
       </div>
     </div>

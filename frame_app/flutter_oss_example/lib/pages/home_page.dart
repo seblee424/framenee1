@@ -1,3 +1,7 @@
+import 'dart:html' as html;
+import 'dart:js' as js;
+import 'dart:js_util' as js_util;
+
 import 'package:flutter/material.dart';
 
 import '../models/app_user.dart';
