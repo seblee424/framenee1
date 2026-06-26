@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Calendar, Image, Trophy, Cloud, Mic, User, Users, CheckSquare } from 'lucide-react';
-import { format } from 'date-fns';
+import { format, isSameDay } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { CalendarDetailPage } from './components/CalendarDetailPage';
 import { PhotoDetailPage } from './components/PhotoDetailPage';
@@ -214,7 +214,13 @@ function AppContent() {
                       </div>
                       {calendarEvents.length > 0 && (
                         <div className="w-full space-y-1">
-                          {calendarEvents.slice(0, 3).map((event, idx) => (
+                          {calendarEvents
+                            .filter(e => {
+                              const today = new Date();
+                              return isSameDay(e.date, today) && !e.completed;
+                            })
+                            .slice(0, 3)
+                            .map((event, idx) => (
                             <div key={idx} className="flex items-center gap-1.5 text-[10px]">
                               <div className="w-1 h-1 rounded-full bg-blue-500 flex-shrink-0" />
                               <span className="text-left truncate">{event.title}</span>

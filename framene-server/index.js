@@ -2294,6 +2294,28 @@ app.delete('/api/web/accounts/:id', async (req, res) => {
   }
 });
 
+/// 删除已完成日程记录（从 user_completed_events 表物理删除）
+app.delete('/api/web/events/completed-record/:id', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM user_completed_events WHERE id = $1 RETURNING id',
+      [parseInt(id)]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '记录不存在' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('删除已完成记录失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================
 // 启动服务器
 // 兼容本地开发（PORT）和阿里云 FC 自定义运行时（FC_SERVER_PORT）

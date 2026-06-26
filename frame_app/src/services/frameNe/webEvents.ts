@@ -47,6 +47,11 @@ export const webEventsApi = {
   getCompletedSummary() {
     return apiClient.get<{ items: CompletedSummaryItem[] }>('/api/web/events/completed-summary');
   },
+
+  /** 删除已完成日程记录 */
+  removeCompletedRecord(id: string) {
+    return apiClient.delete<{ success: boolean }>(`/api/web/events/completed-record/${id}`);
+  },
 };
 
 export interface CompletedEvent {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Trophy, Home, Calendar, Clock, ChevronRight, ChevronLeft, User } from 'lucide-react';
+import { Trophy, Home, Calendar, Clock, ChevronRight, ChevronLeft, User, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -16,6 +16,20 @@ export function RewardsDetailPage({ onClose }: RewardsDetailPageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedUserRecords, setSelectedUserRecords] = useState<CompletedEvent[]>([]);
   const [viewingUser, setViewingUser] = useState<string | null>(null);
+
+  const handleDeleteRecord = async (recordId: string, email: string) => {
+    try {
+      await webEventsApi.removeCompletedRecord(recordId);
+      // 刷新当前用户的记录
+      const res = await webEventsApi.getCompletedRecords(email);
+      setSelectedUserRecords(res.items);
+      // 同时刷新汇总
+      const summaryRes = await webEventsApi.getCompletedSummary();
+      setSummary(summaryRes.items);
+    } catch (err) {
+      console.error('删除记录失败', err);
+    }
+  };
 
   useEffect(() => {
     loadData();
@@ -112,6 +126,13 @@ export function RewardsDetailPage({ onClose }: RewardsDetailPageProps) {
                       </span>
                     </div>
                   </div>
+                  <button
+                    onClick={() => handleDeleteRecord(record.id, viewingUser!)}
+                    className="p-1.5 rounded-lg hover:bg-red-100 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                    title="删除记录"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </motion.div>
               ))
             )}
