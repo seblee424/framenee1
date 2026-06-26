@@ -50,13 +50,19 @@ export function VoiceInput({ onRequireLogin, onCreated }: VoiceInputProps) {
 
     recognition.onresult = (event: any) => {
       let finalText = '';
+      let interimText = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalText += event.results[i][0].transcript;
+          finalText += transcript;
+        } else {
+          interimText += transcript;
         }
       }
       if (finalText) {
         setTranscript(prev => prev + finalText);
+      } else if (interimText) {
+        setTranscript(interimText);
       }
     };
 

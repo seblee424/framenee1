@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
+import 'dart:js_util' as js_util;
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -668,8 +669,17 @@ class AppBackend {
   /// 语音转写：发送文本到解析 API，返回解析后的事件
   static Future<Map<String, dynamic>> transcribeVoice(String text) async {
     try {
-      // 获取浏览器时区
-      final timezone = js.context.callMethod('Intl.DateTimeFormat').callMethod('resolvedOptions')['timeZone'] ?? 'Asia/Shanghai';
+      // 获取浏览器时区（安全方式，避免 js.context 调用失败）
+      String timezone = 'Asia/Shanghai';
+      try {
+        final intl = js_util.getProperty(js.context, 'Intl');
+        if (intl != null) {
+          final dtf = js_util.callConstructor(js_util.getProperty(intl, 'DateTimeFormat'), []);
+          final resolved = js_util.callMethod(dtf, 'resolvedOptions', []);
+          final tz = js_util.getProperty(resolved, 'timeZone') as String?;
+          if (tz != null && tz.isNotEmpty) timezone = tz;
+        }
+      } catch (_) {}
       final offset = DateTime.now().timeZoneOffset.inMinutes;
 
       final result = await ApiService.post(

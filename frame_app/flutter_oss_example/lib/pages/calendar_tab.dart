@@ -137,16 +137,38 @@ class _CalendarTabState extends State<CalendarTab> {
     }
   }
 
-  /// 启动语音识别（浏览器 Web Speech API）
-  void _startVoiceRecognition() {
+  /// 启动语音识别（只填写文本框，不自动创建）
+  void _startVoiceRecognition() async {
     try {
-      // 通过 js_util 访问浏览器 webkitSpeechRecognition
-      final srCtor = js_util.getProperty(js.context, 'webkitSpeechRecognition') ??
-                      js_util.getProperty(js.context, 'SpeechRecognition');
-      if (srCtor == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('您的浏览器暂不支持语音识别，请使用 Chrome')),
+      _voiceController.clear();
+
+      // 请求麦克风权限
+      try {
+        await js_util.promiseToFuture(
+          js_util.callMethod(
+            js_util.getProperty(html.window.navigator, 'mediaDevices'),
+            'getUserMedia',
+            [js_util.jsify({'audio': true})],
+          ),
         );
+      } catch (permError) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('请在地址栏开启麦克风权限后重试'), backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+
+      // 检查 SpeechRecognition
+      final srCtor = js_util.getProperty(html.window, 'webkitSpeechRecognition') ??
+                      js_util.getProperty(html.window, 'SpeechRecognition');
+      if (srCtor == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('您的浏览器暂不支持语音识别')),
+          );
+        }
         return;
       }
 
@@ -155,45 +177,243 @@ class _CalendarTabState extends State<CalendarTab> {
       js_util.setProperty(recognition, 'continuous', false);
       js_util.setProperty(recognition, 'interimResults', true);
 
+      String spokenText = '';
+
       js_util.setProperty(recognition, 'onresult', js.allowInterop((event) {
         String finalText = '';
         final results = js_util.getProperty(event, 'results');
         final length = js_util.getProperty(results, 'length') as int;
         for (int i = 0; i < length; i++) {
           final result = js_util.getProperty(results, i);
+          final transcript = js_util.getProperty(
+            js_util.getProperty(result, 0), 'transcript',
+          ) as String? ?? '';
           if (js_util.getProperty(result, 'isFinal') == true) {
-            final transcript = js_util.getProperty(
-              js_util.getProperty(result, 0), 'transcript',
-            ) as String?;
-            if (transcript != null) finalText += transcript;
+            finalText += transcript;
           }
         }
         if (finalText.isNotEmpty) {
-          _voiceController.text = _voiceController.text + finalText;
+          spokenText = finalText;
+          // 实时显示到文本框
+          _voiceController.text = spokenText;
+          _voiceController.selection = TextSelection.fromPosition(
+            TextPosition(offset: spokenText.length),
+          );
         }
       }));
 
-      js_util.setProperty(recognition, 'onerror', js.allowInterop((error) {
-        final errorType = js_util.getProperty(error, 'error') as String?;
-        String msg;
-        if (errorType == 'not-allowed') {
-          msg = '麦克风权限被拒，请在地址栏🔒开启权限';
-        } else if (errorType == 'no-speech') {
-          msg = '没有检测到语音';
-        } else {
-          msg = '语音识别出错: $errorType';
-        }
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      js_util.setProperty(recognition, 'onend', js.allowInterop((event) {
+        // 语音结束，文字已填入文本框，用户按回车即可解析
       }));
 
       js_util.callMethod(recognition, 'start', []);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('正在聆听...'), duration: Duration(seconds: 2)),
-      );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('语音识别启动失败: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('语音识别启动失败: $e')),
+        );
+      }
+    }
+  }
+
+  /// 处理文字发送：直接解析并创建日程，无预览弹窗
+  Future<void> _handleVoiceSend() async {
+    final text = _voiceController.text.trim();
+    if (text.isEmpty) return;
+
+    setState(() => _isProcessingVoice = true);
+    try {
+      final result = await AppBackend.transcribeVoice(text);
+      final calendarEvents = result['calendarEvents'] as List<dynamic>? ?? [];
+      if (calendarEvents.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未能解析出日程事件，请重新描述')),
+          );
+        }
+        return;
+      }
+
+      // 直接保存，不弹预览
+      final events = calendarEvents.cast<Map<String, dynamic>>();
+      final saved = await AppBackend.saveVoiceEvents(events, widget.user);
+      if (mounted) {
+        if (saved.isNotEmpty) {
+          final firstDate = DateTime.parse(saved.first.startAt).toLocal();
+          setState(() {
+            _selectedDate = DateTime(firstDate.year, firstDate.month, firstDate.day);
+            _viewMonth = DateTime(firstDate.year, firstDate.month);
+          });
+        }
+        _loadData();
+        _voiceController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('解析录入成功 ✅'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('处理失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessingVoice = false);
+    }
+  }
+
+  /// 显示日程预览弹窗（类似 Web 端样式）
+  void _showEventPreview(List<Map<String, dynamic>> events) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 顶部：AI 标识 + 已识别数量
+              Row(
+                children: [
+                  const Icon(Icons.auto_awesome, color: Colors.blue, size: 20),
+                  const SizedBox(width: 6),
+                  Text(
+                    '已识别 ${events.length} 个日程',
+                    style: TextStyle(color: Colors.grey.shade700, fontSize: 14),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // 日程卡片列表
+              ...events.map((event) => Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      event['title'] as String? ?? '',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatTimeRange(event['startAt'] as String?, event['endAt'] as String?),
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                    ),
+                  ],
+                ),
+              )),
+              const SizedBox(height: 16),
+              // 底部按钮
+              Row(
+                children: [
+                  Expanded(
+                    flex: 5,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        setState(() => _isProcessingVoice = true);
+                        try {
+                          final saved = await AppBackend.saveVoiceEvents(events, widget.user);
+                          if (saved.isNotEmpty && mounted) {
+                            final firstDate = DateTime.parse(saved.first.startAt);
+                            setState(() {
+                              _selectedDate = firstDate;
+                              _viewMonth = DateTime(firstDate.year, firstDate.month);
+                            });
+                            _loadData();
+                            _voiceController.clear();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('解析录入成功 ✅'),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          } else if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('创建失败，请先登录后再试'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('创建失败: $e')),
+                            );
+                          }
+                        } finally {
+                          if (mounted) setState(() => _isProcessingVoice = false);
+                        }
+                      },
+                      icon: const Icon(Icons.check, size: 18),
+                      label: const Text('确认创建'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF4A7BF7),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    flex: 1,
+                    child: GestureDetector(
+                      onTap: () => Navigator.pop(ctx),
+                      child: Container(
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(Icons.close, color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 格式化日程时间显示
+  String _formatTimeRange(String? startAt, String? endAt) {
+    try {
+      if (startAt == null) return '';
+      // 解析 ISO 时间，自动处理时区
+      final start = DateTime.parse(startAt);
+      // 如果有时区信息，toLocal() 会正确转换
+      final sLocal = startAt.endsWith('Z') || startAt.contains('+') || startAt.contains('-')
+          ? start.toLocal()
+          : start;
+      final startStr = '${sLocal.hour.toString().padLeft(2, '0')}:${sLocal.minute.toString().padLeft(2, '0')}';
+
+      if (endAt != null) {
+        final end = DateTime.parse(endAt);
+        final eLocal = endAt.endsWith('Z') || endAt.contains('+') || endAt.contains('-')
+            ? end.toLocal()
+            : end;
+        return '${startStr} → ${eLocal.hour.toString().padLeft(2, '0')}:${eLocal.minute.toString().padLeft(2, '0')}';
+      }
+      return startStr;
+    } catch (_) {
+      return startAt ?? '';
     }
   }
 
@@ -345,7 +565,6 @@ class _CalendarTabState extends State<CalendarTab> {
   Future<void> _showAddEventDialog() async {
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
-    final locationController = TextEditingController();
     DateTime startDate = DateTime.now();
     DateTime endDate = DateTime.now().add(const Duration(hours: 1));
     TimeOfDay startTime = TimeOfDay.fromDateTime(startDate);
@@ -377,14 +596,6 @@ class _CalendarTabState extends State<CalendarTab> {
                         border: OutlineInputBorder(),
                       ),
                       maxLines: 2,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: locationController,
-                      decoration: const InputDecoration(
-                        labelText: '地点',
-                        border: OutlineInputBorder(),
-                      ),
                     ),
                     const SizedBox(height: 12),
                     Row(
@@ -540,7 +751,6 @@ class _CalendarTabState extends State<CalendarTab> {
                     Navigator.pop(context, {
                       'title': titleController.text.trim(),
                       'description': descriptionController.text.trim(),
-                      'location': locationController.text.trim(),
                       'startAt': startDate,
                       'endAt': endDate,
                     });
@@ -565,9 +775,6 @@ class _CalendarTabState extends State<CalendarTab> {
             : result['description'] as String,
         startAt: result['startAt'] as DateTime,
         endAt: result['endAt'] as DateTime,
-        location: (result['location'] as String).isEmpty
-            ? null
-            : result['location'] as String,
       );
       if (!mounted) return;
       setState(() {
@@ -605,9 +812,16 @@ class _CalendarTabState extends State<CalendarTab> {
 
   String _formatEventTime(CalendarEvent event) {
     try {
+      // 解析 ISO 时间，自动处理时区
       final start = DateTime.parse(event.startAt);
       final end = DateTime.parse(event.endAt);
-      return '${start.month}/${start.day} ${_twoDigits(start.hour)}:${_twoDigits(start.minute)} - ${_twoDigits(end.hour)}:${_twoDigits(end.minute)}';
+      final sLocal = event.startAt.endsWith('Z') || event.startAt.contains('+') || event.startAt.contains('-')
+          ? start.toLocal()
+          : start;
+      final eLocal = event.endAt.endsWith('Z') || event.endAt.contains('+') || event.endAt.contains('-')
+          ? end.toLocal()
+          : end;
+      return '${sLocal.month}/${sLocal.day} ${sLocal.hour.toString().padLeft(2, '0')}:${sLocal.minute.toString().padLeft(2, '0')} - ${eLocal.hour.toString().padLeft(2, '0')}:${eLocal.minute.toString().padLeft(2, '0')}';
     } catch (_) {
       return event.startAt;
     }
@@ -1338,13 +1552,94 @@ class _CalendarTabState extends State<CalendarTab> {
           ],
         ),
       ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 70, right: 4),
-        child: FloatingActionButton(
-          onPressed: _showVoiceDialog,
-          backgroundColor: Colors.orange,
-          child: const Icon(Icons.mic, color: Colors.white),
-          tooltip: '语音添加事件',
+      // 底部语音输入栏
+      bottomNavigationBar: Container(
+        padding: EdgeInsets.only(
+          left: 12,
+          right: 12,
+          top: 8,
+          bottom: MediaQuery.of(context).padding.bottom + 8,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: Colors.grey.shade200)),
+        ),
+        child: Row(
+          children: [
+            // 左侧：蓝色圆形麦克风按钮
+            GestureDetector(
+              onTap: () => _startVoiceRecognition(),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4A7BF7),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.mic, color: Colors.white, size: 22),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // 右侧：圆角输入框
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: TextField(
+                  controller: _voiceController,
+                  decoration: const InputDecoration(
+                    hintText: '点击 🎤 说话，或直接输入日程描述',
+                    hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  maxLines: 1,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _handleVoiceSend(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            // 右侧：发送按钮（有文字时才显示）
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: _voiceController,
+              builder: (context, value, child) {
+                final hasText = value.text.trim().isNotEmpty;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: hasText ? 44 : 0,
+                  height: 44,
+                  child: hasText
+                      ? GestureDetector(
+                          onTap: _isProcessingVoice ? null : _handleVoiceSend,
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF4A7BF7),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: _isProcessingVoice
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    ),
+                                  )
+                                : const Icon(Icons.send, color: Colors.white, size: 20),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                );
+              },
+            ),
+          ],
         ),
       ),
     );
@@ -1354,175 +1649,6 @@ class _CalendarTabState extends State<CalendarTab> {
   final _voiceController = TextEditingController();
   bool _isProcessingVoice = false;
 
-  /// 显示语音输入弹窗
-  Future<void> _showVoiceDialog() async {
-    _voiceController.clear();
-    final result = await showModalBottomSheet<dynamic>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 16,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const Text(
-                '语音或文字添加日程',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '输入描述，例如："明天下午3点和张三开会"',
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade50,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.grey.shade200),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _voiceController,
-                        maxLines: 4,
-                        minLines: 2,
-                        decoration: const InputDecoration(
-                          hintText: '说话或输入日程描述...',
-                          border: InputBorder.none,
-                        ),
-                      ),
-                    ),
-                    // 语音识别按钮
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: GestureDetector(
-                        onTap: () => _startVoiceRecognition(),
-                        child: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: Colors.blue.shade50,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.blue.shade200),
-                          ),
-                          child: const Icon(Icons.mic, color: Colors.blue, size: 22),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _isProcessingVoice ? null : () async {
-                    final text = _voiceController.text.trim();
-                    if (text.isEmpty) return;
-                    setState(() => _isProcessingVoice = true);
-                    try {
-                      final result = await AppBackend.transcribeVoice(text);
-                      final calendarEvents = result['calendarEvents'] as List<dynamic>? ?? [];
-                      if (calendarEvents.isNotEmpty) {
-                        final user = widget.user;
-                        final events = await AppBackend.saveVoiceEvents(
-                          calendarEvents.cast<Map<String, dynamic>>(),
-                          user,
-                        );
-                        if (events.isNotEmpty) {
-                          // 跳转到第一个事件的日期
-                          final firstDate = DateTime.parse(events.first.startAt);
-                          setState(() {
-                            _selectedDate = firstDate;
-                            _viewMonth = DateTime(firstDate.year, firstDate.month);
-                          });
-                          _loadData();
-                          Navigator.of(ctx).pop();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('解析录入成功')),
-                          );
-                        }
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('未能解析出日程事件，请重新描述')),
-                        );
-                      }
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('处理失败: $e')),
-                      );
-                    } finally {
-                      setState(() => _isProcessingVoice = false);
-                    }
-                  },
-                  icon: _isProcessingVoice
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.mic),
-                  label: Text(_isProcessingVoice ? '处理中...' : '语音录入日程'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                ),
-              ),
-              // 同步到 Web
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => _syncToWeb(),
-                  icon: const Icon(Icons.cloud_upload, size: 18),
-                  label: const Text('日程同步到web端'),
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: Colors.blue.shade50,
-                    foregroundColor: Colors.blue.shade700,
-                    side: BorderSide(color: Colors.blue.shade300),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
 
   /// 弹出日历设置弹窗（飞书连接）
   void _showCalendarSettings() {
@@ -1586,6 +1712,28 @@ class _CalendarTabState extends State<CalendarTab> {
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     side: BorderSide(color: Colors.blue.shade200),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // 日程同步到 Web 端
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _syncToWeb();
+                  },
+                  icon: const Icon(Icons.cloud_upload, size: 18),
+                  label: const Text('日程同步到web端'),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: Colors.blue.shade50,
+                    foregroundColor: Colors.blue.shade700,
+                    side: BorderSide(color: Colors.blue.shade300),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),

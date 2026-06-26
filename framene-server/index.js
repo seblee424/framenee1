@@ -1785,13 +1785,523 @@ app.get('/api/health', (req, res) => {
 });
 
 // ============================================
-// 启动服务器
+// Web 端 API（读写 web_calendar_events 和 device_accounts 表）
+// ============================================
+
+/// 新增：在 ensureAllTables 中创建 web_calendar_events 和 device_accounts 表（如不存在）
+/// 这些表在之前版本中已通过单独脚本创建，这里确保自动创建
+async function ensureWebTables() {
+  try {
+    const pool = await getPool();
+    // web_calendar_events 表
+    await pool.query(`create table if not exists web_calendar_events (
+      id serial primary key,
+      source_app_user_id varchar(255),
+      source_email varchar(255),
+      title varchar(255) not null,
+      description text,
+      start_at timestamptz not null,
+      end_at timestamptz not null,
+      location text,
+      status varchar(20) not null default 'active',
+      synced_at timestamptz not null default now(),
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );`);
+    await pool.query('create index if not exists web_calendar_events_source_email_idx on web_calendar_events (source_email)');
+    await pool.query('create index if not exists web_calendar_events_start_at_idx on web_calendar_events (start_at asc)');
+
+    // device_accounts 表
+    await pool.query(`create table if not exists device_accounts (
+      id serial primary key,
+      email varchar(255) not null,
+      name varchar(255),
+      avatar_url text,
+      login_provider varchar(50) default 'email',
+      status varchar(20) not null default 'active',
+      last_sync_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );`);
+    await pool.query('create unique index if not exists device_accounts_email_idx on device_accounts (email)');
+
+    // user_completed_events 表
+    await pool.query(`create table if not exists user_completed_events (
+      id serial primary key,
+      source_app_user_id varchar(255),
+      source_email varchar(255),
+      title varchar(255) not null,
+      completed_at timestamptz not null default now(),
+      created_at timestamptz not null default now()
+    );`);
+    await pool.query('create index if not exists user_completed_events_source_email_idx on user_completed_events (source_email)');
+
+    console.log('✅ Web 端业务表已就绪');
+  } catch (err) {
+    console.error('❌ 初始化 Web 业务表失败:', err.message);
+  }
+}
+
+/// 1. 获取 Web 端日程列表
+app.get('/api/web/events', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { startAt, endAt, sourceEmail } = req.query;
+    let query = 'SELECT * FROM web_calendar_events WHERE status = $1';
+    const params = ['active'];
+    let idx = 2;
+
+    if (startAt) {
+      query += ` AND start_at >= $${idx++}`;
+      params.push(startAt);
+    }
+    if (endAt) {
+      query += ` AND end_at <= $${idx++}`;
+      params.push(endAt);
+    }
+    if (sourceEmail) {
+      query += ` AND source_email = $${idx++}`;
+      params.push(sourceEmail);
+    }
+    query += ' ORDER BY start_at ASC';
+
+    const result = await pool.query(query, params);
+    res.json({ items: result.rows.map(r => ({ ...r, id: String(r.id) })) });
+  } catch (error) {
+    console.error('查询 Web 日程失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 2. App 同步日程到 Web（全量覆盖）
+app.post('/api/web/events/sync', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { items, sourceEmail } = req.body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: '缺少 items 数组' });
+    }
+
+    // 如果指定了 sourceEmail，删除该邮箱原有 Web 日程
+    if (sourceEmail) {
+      await pool.query('DELETE FROM web_calendar_events WHERE source_email = $1', [sourceEmail]);
+    }
+
+    const created = [];
+    for (const item of items) {
+      const { title, startAt, endAt, description, location, sourceAppUserId } = item;
+      if (!title || !startAt || !endAt) continue;
+
+      const result = await pool.query(
+        `INSERT INTO web_calendar_events (source_app_user_id, source_email, title, description, start_at, end_at, location, synced_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         RETURNING *`,
+        [sourceAppUserId || null, sourceEmail || null, title, description || null, startAt, endAt, location || null]
+      );
+      const row = result.rows[0];
+      created.push({ id: String(row.id), ...row });
+    }
+
+    res.json({ synced: created.length, items: created });
+  } catch (error) {
+    console.error('同步日程到 Web 失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 3. 设备账号同步（服务端直连 RDS：从 calendar_events 拉取到 web_calendar_events）
+app.post('/api/web/events/sync-from-account', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: '缺少 email 参数' });
+    }
+
+    const pool = await getPool();
+
+    // 查找用户
+    const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    const userId = userResult.rows[0].id;
+
+    // 清空该邮箱旧的 Web 日程
+    await pool.query('DELETE FROM web_calendar_events WHERE source_email = $1', [email]);
+
+    // 从 calendar_events 拉取事件
+    const eventsResult = await pool.query(
+      'SELECT * FROM calendar_events WHERE user_id = $1 ORDER BY start_at ASC',
+      [userId]
+    );
+
+    let synced = 0;
+    const items = [];
+    for (const ev of eventsResult.rows) {
+      await pool.query(
+        `INSERT INTO web_calendar_events (source_app_user_id, source_email, title, description, start_at, end_at, location, synced_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+        [String(userId), email, ev.title, ev.description || null, ev.start_at, ev.end_at, ev.location || null]
+      );
+      synced++;
+      items.push({
+        id: String(ev.id),
+        title: ev.title,
+        startAt: ev.start_at,
+        endAt: ev.end_at,
+      });
+    }
+
+    // 更新设备账号同步时间
+    await pool.query(
+      'UPDATE device_accounts SET last_sync_at = NOW() WHERE email = $1',
+      [email]
+    );
+
+    res.json({ synced, message: `已同步 ${synced} 条日程`, items });
+  } catch (error) {
+    console.error('服务端同步失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 4. AI 解析自然语言日程文本（DeepSeek + 正则降级）
+app.post('/api/web/events/parse-voice', async (req, res) => {
+  try {
+    const { text, timezone, utcOffset } = req.body;
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({ error: '缺少 text 参数' });
+    }
+
+    const deepseekKey = process.env.DEEPSEEK_API_KEY || process.env.VOICE_API_KEY || '';
+
+    // 先尝试 DeepSeek AI 解析
+    if (deepseekKey) {
+      try {
+        const now = new Date();
+        const tz = timezone || 'Asia/Shanghai';
+        const offset = utcOffset !== undefined ? utcOffset : -now.getTimezoneOffset();
+
+        const aiPrompt = `你是一个日程解析助手。当前时间：${now.toISOString()}，用户时区：${tz}（UTC${offset >= 0 ? '+' : ''}${Math.floor(offset / 60)}:${String(Math.abs(offset) % 60).padStart(2, '0')}）。
+
+请将以下自然语言日程描述解析为 JSON 数组，每个元素包含 title、startAt、endAt（ISO 格式，含时区后缀）、location（可选）。
+
+规则：
+- 如果未指定日期，默认今天
+- 如果未指定结束时间，默认开始时间后 30 分钟
+- 时间使用用户时区计算
+- 时间格式如：2026-06-17T14:00:00+08:00
+- 如果没有提到地点，location 设为空字符串
+- 仅返回 JSON 数组，不要其他文字
+
+用户输入：${text}`;
+
+        const aiResp = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${deepseekKey}`,
+          },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            messages: [{ role: 'user', content: aiPrompt }],
+            temperature: 0.1,
+            max_tokens: 2000,
+          }),
+        });
+
+        if (aiResp.ok) {
+          const aiData = await aiResp.json();
+          const aiContent = aiData.choices?.[0]?.message?.content || '[]';
+          const cleaned = aiContent.replace(/```json?/gi, '').replace(/```/g, '').trim();
+          const aiItems = JSON.parse(cleaned);
+          if (Array.isArray(aiItems) && aiItems.length > 0) {
+            return res.json({ source: 'ai', items: aiItems });
+          }
+        }
+      } catch (aiError) {
+        console.error('DeepSeek AI 解析失败:', aiError.message);
+        // 降级到正则
+      }
+    }
+
+    // 降级：简单正则解析
+    const items = parseBasicEvents(text);
+    res.json({ source: 'regex', items });
+  } catch (error) {
+    console.error('语音解析失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 辅助函数：简单正则解析日程文本（降级方案）
+function parseBasicEvents(text) {
+  const items = [];
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  // 尝试匹配 "早上/上午/下午/晚上 X点" 等时间模式
+  const timePatterns = [
+    /(?:今|明|后)天?(?:早上|上午|早晨|中午|下午|晚上|深夜)?\s*(\d+)\s*点(?:\s*(\d+))?\s*钟?\s*(?:去|到|做|吃|参加)?\s*(.+?)(?=[，。,.\s]|$)/g,
+    /(.+?)(?:在|于|从)\s*(?:今|明|后)天?(?:早上|上午|早晨|中午|下午|晚上|深夜)?\s*(\d+)\s*点(?:\s*(\d+))?\s*钟?/g,
+    /(\d+)\s*点(?:\s*(\d+))?\s*(.+?)(?=[，。,.\s]|$)/g,
+  ];
+
+  for (const pattern of timePatterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const groups = match.filter(g => g !== undefined);
+      let title, hour, minute;
+
+      if (groups.length >= 3) {
+        // Try to find hour, minute, title
+        if (/^\d+$/.test(groups[1])) {
+          hour = parseInt(groups[1]);
+          minute = groups[2] && /^\d+$/.test(groups[2]) ? parseInt(groups[2]) : 0;
+          title = groups[groups.length - 1];
+        } else {
+          hour = parseInt(groups[groups.length - 2]);
+          minute = groups[groups.length - 1] && /^\d+$/.test(groups[groups.length - 1]) ? parseInt(groups[groups.length - 1]) : 0;
+          title = groups[1];
+        }
+
+        const startAt = `${today}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+        const endDate = new Date(now);
+        endDate.setHours(hour, (minute || 0) + 30);
+        const endAt = `${today}T${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}:00`;
+
+        if (title && title.length < 30) {
+          items.push({ title: title.trim(), startAt, endAt, location: '' });
+        }
+      }
+    }
+    if (items.length > 0) break; // 只要一组模式匹配成功就返回
+  }
+
+  return items;
+}
+
+/// 5. 语音创建日程（直接写入 web_calendar_events）
+app.post('/api/web/events/voice-create', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { items, sourceEmail, sourceAppUserId } = req.body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: '缺少 items 数组' });
+    }
+
+    const created = [];
+    for (const item of items) {
+      const { title, startAt, endAt, description, location } = item;
+      if (!title || !startAt || !endAt) continue;
+
+      const result = await pool.query(
+        `INSERT INTO web_calendar_events (source_app_user_id, source_email, title, description, start_at, end_at, location)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, title, start_at, end_at`,
+        [sourceAppUserId || null, sourceEmail || null, title, description || null, startAt, endAt, location || null]
+      );
+      const row = result.rows[0];
+      created.push({ id: String(row.id), title: row.title, startAt: row.start_at, endAt: row.end_at });
+    }
+
+    res.json({ items: created, count: created.length });
+  } catch (error) {
+    console.error('语音创建日程失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 6. 切换完成状态
+app.put('/api/web/events/:id/complete', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    // 获取当前事件
+    const currentResult = await pool.query('SELECT * FROM web_calendar_events WHERE id = $1', [parseInt(id)]);
+    if (currentResult.rows.length === 0) {
+      return res.status(404).json({ error: '事件不存在' });
+    }
+
+    const event = currentResult.rows[0];
+    const newStatus = event.status === 'completed' ? 'active' : 'completed';
+
+    // 更新状态
+    await pool.query(
+      'UPDATE web_calendar_events SET status = $1, updated_at = NOW() WHERE id = $2',
+      [newStatus, parseInt(id)]
+    );
+
+    // 如果标记为完成，记录到 user_completed_events 表
+    if (newStatus === 'completed') {
+      await pool.query(
+        `INSERT INTO user_completed_events (event_id, source_app_user_id, source_email, title, completed_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [parseInt(id), event.source_app_user_id, event.source_email, event.title]
+      );
+    }
+
+    res.json({ success: true, status: newStatus });
+  } catch (error) {
+    console.error('切换完成状态失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 7. 物理删除 Web 端日程
+app.delete('/api/web/events/:id', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM web_calendar_events WHERE id = $1 RETURNING id',
+      [parseInt(id)]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '事件不存在' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('删除 Web 日程失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 8. 获取已完成记录
+app.get('/api/web/events/completed-records', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { email } = req.query;
+
+    let query = 'SELECT * FROM user_completed_events';
+    const params = [];
+
+    if (email) {
+      query += ' WHERE source_email = $1';
+      params.push(email);
+    }
+    query += ' ORDER BY completed_at DESC';
+
+    const result = await pool.query(query, params);
+    res.json({ items: result.rows.map(r => ({ ...r, id: String(r.id) })) });
+  } catch (error) {
+    console.error('获取完成记录失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 9. 获取已完成统计（按用户分组）
+app.get('/api/web/events/completed-summary', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT source_email, source_app_user_id, count(*) as total_completed, max(completed_at) as last_completed_at
+       FROM user_completed_events
+       GROUP BY source_email, source_app_user_id
+       ORDER BY count(*) DESC`
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    console.error('获取完成统计失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 10. 获取设备账号列表
+app.get('/api/web/accounts', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      'SELECT * FROM device_accounts WHERE status = $1 ORDER BY created_at ASC',
+      ['active']
+    );
+    res.json({ items: result.rows.map(r => ({ ...r, id: String(r.id) })) });
+  } catch (error) {
+    console.error('获取设备账号失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 11. 同步/注册设备账号
+app.post('/api/web/accounts/sync', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { email, name, loginProvider } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: '缺少 email 参数' });
+    }
+
+    // 检查账号数量上限（5 个）
+    const countResult = await pool.query(
+      "SELECT COUNT(*) as count FROM device_accounts WHERE status = 'active'"
+    );
+    if (parseInt(countResult.rows[0].count) >= 5) {
+      // 如果已存在此邮箱，允许更新
+      const existing = await pool.query('SELECT id FROM device_accounts WHERE email = $1', [email]);
+      if (existing.rows.length === 0) {
+        return res.status(400).json({ error: '设备账号已达上限（最多 5 个）' });
+      }
+    }
+
+    // 插入或更新
+    const result = await pool.query(
+      `INSERT INTO device_accounts (email, name, login_provider)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (email) DO UPDATE SET
+         name = EXCLUDED.name, login_provider = EXCLUDED.login_provider, updated_at = NOW()
+       RETURNING *`,
+      [email, name || email.split('@')[0], loginProvider || 'email']
+    );
+
+    const row = result.rows[0];
+    res.json({ id: String(row.id), ...row });
+  } catch (error) {
+    console.error('同步设备账号失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/// 12. 删除设备账号（同时删除关联 Web 日程）
+app.delete('/api/web/accounts/:id', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    // 查找账号获取 email
+    const accountResult = await pool.query('SELECT * FROM device_accounts WHERE id = $1', [parseInt(id)]);
+    if (accountResult.rows.length === 0) {
+      return res.status(404).json({ error: '账号不存在' });
+    }
+
+    const account = accountResult.rows[0];
+
+    // 删除关联的 Web 日程
+    await pool.query('DELETE FROM web_calendar_events WHERE source_email = $1', [account.email]);
+    // 删除账号
+    await pool.query('DELETE FROM device_accounts WHERE id = $1', [parseInt(id)]);
+
+    res.json({ success: true, message: '账号已删除' });
+  } catch (error) {
+    console.error('删除设备账号失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
 // 启动服务器
 // 兼容本地开发（PORT）和阿里云 FC 自定义运行时（FC_SERVER_PORT）
 const PORT = process.env.FC_SERVER_PORT || process.env.PORT || 3000;
 app.listen(PORT, async () => {
   // 初始化 RDS 表
   await ensureAllTables();
+  await ensureWebTables();
 
   console.log(`FrameNe API 服务已启动，端口: ${PORT}`);
   console.log('环境变量检查:');
